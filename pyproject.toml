@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "axor-classifier-simple"
+version = "0.1.0"
+description = "ML classifiers for axor-core: TaskSignalClassifier + MLAnomalyDetector"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+keywords = ["agents", "governance", "ml", "anomaly-detection"]
+
+# Zero required deps by design — sklearn is optional
+dependencies = []
+
+[project.optional-dependencies]
+ml = [
+    "scikit-learn>=1.4",
+    "joblib>=1.3",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "scikit-learn>=1.4",
+    "joblib>=1.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["axor_classifier_simple"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
