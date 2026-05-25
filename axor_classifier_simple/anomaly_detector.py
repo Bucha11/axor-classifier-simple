@@ -15,6 +15,8 @@ import logging
 import os
 from pathlib import Path
 
+from axor_classifier_simple._model_security import validate_trusted_model_file
+
 log = logging.getLogger("axor.anomaly_detector")
 
 try:
@@ -32,6 +34,7 @@ try:
         LLMVerifier,
         NormalizedIntent,
     )
+    from axor_core.node.canonicalizer import IntentCanonicalizer
     _AXOR_AVAILABLE = True
 except ImportError:
     _AXOR_AVAILABLE = False
@@ -201,6 +204,7 @@ if _AXOR_AVAILABLE:
             suspicious_threshold: float = 0.40,
             critical_threshold: float = 0.75,
             score_weights: "dict[str, float] | None" = None,
+            fail_closed_on_verifier_error: bool = False,
         ) -> None:
             _require_sklearn()
             path = Path(model_path) if model_path else _DEFAULT_MODEL_PATH
@@ -209,7 +213,7 @@ if _AXOR_AVAILABLE:
                     f"No trained anomaly model found at {path}. "
                     "Run: python -m axor_classifier_simple.train_anomaly"
                 )
-            self._model                = joblib.load(path)
+            self._model                = joblib.load(validate_trusted_model_file(path))
             self._verifier             = gray_zone_verifier
             self._window_size          = window_size
             self._gray_zone_threshold  = gray_zone_threshold
@@ -218,6 +222,8 @@ if _AXOR_AVAILABLE:
             self._score_weights        = score_weights or {
                 "critical": 1.0, "suspicious": 0.55, "normal": 0.0
             }
+            self._canonicalizer        = IntentCanonicalizer()
+            self._fail_closed_on_verifier_error = fail_closed_on_verifier_error
 
         async def score(
             self,
@@ -243,14 +249,23 @@ if _AXOR_AVAILABLE:
                 and score >= self._gray_zone_threshold
             ):
                 try:
+                    canonical_window = [
+                        self._canonicalizer.canonicalize(intent) for intent in window
+                    ]
                     result = await self._verifier.verify(
-                        window=window,
+                        window=canonical_window,
                         task_signal_hint=task_signal_hint,
                         policy_name=policy_name,
                     )
                     return result
                 except Exception as exc:
-                    log.warning("LLM verifier failed, falling back to ML score: %s", exc)
+                    log.warning("LLM verifier failed: %s", exc)
+                    if self._fail_closed_on_verifier_error:
+                        return AnomalyResult(
+                            score=min(1.0, max(score, self._critical_threshold)),
+                            cls=AnomalyClass.CRITICAL,
+                            reasons=("verifier_error_fail_closed",),
+                        )
 
             reasons = _extract_reasons(window, cls)
             return AnomalyResult(score=score, cls=cls, reasons=tuple(reasons))

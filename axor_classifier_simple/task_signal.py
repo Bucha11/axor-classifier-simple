@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from axor_classifier_simple._model_security import validate_trusted_model_file
+
 try:
     import joblib
     import numpy as np
@@ -73,7 +75,7 @@ if _AXOR_AVAILABLE:
                     f"No trained model found at {path}. "
                     "Run: python -m axor_classifier_simple.train_task_signal"
                 )
-            bundle = joblib.load(path)
+            bundle = joblib.load(validate_trusted_model_file(path))
             self._complexity_pipeline = bundle["complexity"]
             self._nature_pipeline     = bundle["nature"]
             self._domain_pipeline     = bundle["domain"]

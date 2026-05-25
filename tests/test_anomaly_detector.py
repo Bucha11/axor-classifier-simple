@@ -11,6 +11,7 @@ Trains a model in a temp directory, then verifies:
 from __future__ import annotations
 
 import time
+import os
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -23,6 +24,7 @@ from axor_classifier_simple.anomaly_detector import (
     window_to_feature_vector,
 )
 from axor_classifier_simple.train_anomaly import train
+from axor_classifier_simple._model_security import UntrustedModelError
 
 
 def _ni(**kw) -> NormalizedIntent:
@@ -197,7 +199,39 @@ async def test_gray_zone_verifier_failure_falls_back(trained_model):
     assert result.cls in (AnomalyClass.NORMAL, AnomalyClass.SUSPICIOUS, AnomalyClass.CRITICAL)
 
 
+@pytest.mark.asyncio
+async def test_gray_zone_verifier_failure_can_fail_closed(trained_model):
+    verifier = AsyncMock()
+    verifier.verify = AsyncMock(side_effect=RuntimeError("verifier down"))
+    detector = MLAnomalyDetector(
+        model_path=trained_model,
+        gray_zone_verifier=verifier,
+        gray_zone_threshold=0.0,
+        suspicious_threshold=-1.0,
+        critical_threshold=2.0,
+        fail_closed_on_verifier_error=True,
+    )
+
+    result = await detector.score(window=_normal_coding_window())
+
+    assert verifier.verify.called
+    assert result.cls == AnomalyClass.CRITICAL
+    assert "verifier_error_fail_closed" in result.reasons
+
+
 def test_model_not_found_raises():
     from axor_classifier_simple.anomaly_detector import ModelNotTrainedError
     with pytest.raises(ModelNotTrainedError):
         MLAnomalyDetector(model_path="/nonexistent/path/model.joblib")
+
+
+def test_group_writable_model_file_is_rejected(trained_model):
+    if os.name == "nt":
+        pytest.skip("POSIX mode-bit check")
+    original_mode = trained_model.stat().st_mode
+    try:
+        trained_model.chmod(0o664)
+        with pytest.raises(UntrustedModelError):
+            MLAnomalyDetector(model_path=trained_model)
+    finally:
+        trained_model.chmod(original_mode)

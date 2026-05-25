@@ -2,477 +2,1667 @@
 Synthetic data generator for TaskSignalClassifier.
 
 Produces labelled (text, complexity, nature, domain) tuples covering
-all 45 combinations (3 complexity × 3 nature × 5 domain) plus edge cases.
+all 45 combinations (3 complexity × 3 nature × 5 domain).
 
-Spec targets: ~10-13k examples total, 200-300 per combination, ~300 edge cases.
-85%+ accuracy on held-out synthetic split.
+Two output functions:
+  generate()        — training corpus, ~22k examples
+  generate_hard()   — held-out hard eval set, never used for training.
+                      Phrases not present in any training template.
+                      Accuracy on this set is the real quality metric.
+
+Design principles:
+  - Scope markers are explicit at every complexity level.
+    focused:   "just", "a single", "one", "this", "quickly"
+    moderate:  "the {module} module", "all X in", "several", "throughout"
+    expansive: "entire", "whole", "all", "every", "across", "end to end"
+
+  - Verb sets are exhaustive per nature:
+    generative: write, create, add, implement, build, generate, scaffold,
+                draft, produce, make, introduce, set up, bootstrap
+    mutative:   fix, refactor, update, change, migrate, rewrite, repair,
+                replace, rename, convert, patch, correct, modify, remove
+    readonly:   explain, show, describe, analyze, find, check, review,
+                audit, trace, inspect, what, how, read, look at, identify
+
+  - Real user language: informal phrasing, typos, code-mixed, terse,
+    prefixed with "please", "can you", "help me", etc.
+
+  - Boundary examples (focused vs moderate, generative vs mutative)
+    are explicitly included to train the decision boundary.
 """
 from __future__ import annotations
 
 import random
 
-# ── Templates by (complexity, nature, domain) ─────────────────────────────────
+# ── Substitution vocabulary ────────────────────────────────────────────────────
+
+_FILES    = ["auth.py", "main.py", "utils.py", "models.py", "api.py", "db.py",
+             "config.py", "router.py", "middleware.py", "schema.py", "views.py",
+             "handlers.py", "serializers.py", "tasks.py", "signals.py", "forms.py"]
+_FUNCS    = ["validate", "authenticate", "process", "handle", "compute", "parse",
+             "fetch", "serialize", "dispatch", "transform", "resolve", "retry",
+             "normalize", "format_output", "build_query", "calculate", "generate"]
+_FUNCS2   = ["check", "verify", "run", "execute", "call", "invoke", "trigger",
+             "process_v2", "handle_new", "compute_fast"]
+_MODULES  = ["auth", "payment", "user", "session", "api", "db", "cache",
+             "notifications", "billing", "search", "logging", "telemetry",
+             "orders", "inventory", "shipping", "analytics", "reporting"]
+_CLASSES  = ["User", "Session", "Request", "Handler", "Processor", "Client",
+             "Manager", "Service", "Controller", "Validator", "Repository",
+             "Gateway", "Adapter", "Factory", "Builder"]
+_SERVICES = ["redis", "postgres", "nginx", "docker", "kafka", "elasticsearch",
+             "rabbitmq", "s3", "cloudfront", "mysql", "mongodb", "celery",
+             "grafana", "prometheus", "datadog", "sentry"]
+_ACTIONS  = ["converts data", "validates input", "formats output", "parses JSON",
+             "handles auth", "sends events", "processes webhooks", "queues jobs",
+             "syncs records", "computes scores"]
+_ENDPOINTS= ["/api/v1/users", "/auth/login", "/health", "/api/orders",
+             "/api/payments", "/graphql", "/api/v2/products", "/api/reports",
+             "/api/webhooks", "/api/search"]
+_FEATURES = ["oauth", "caching", "rate-limiting", "pagination", "webhooks",
+             "two-factor auth", "audit logging", "soft deletes", "SSO",
+             "dark mode", "export to CSV", "notifications", "search"]
+_ERRORS   = ["TypeError", "AttributeError", "KeyError", "ImportError",
+             "ValueError", "NullPointerException", "500 error", "segfault",
+             "ConnectionRefused", "TimeoutError", "403 Forbidden", "404"]
+_TOPICS   = ["machine learning", "distributed systems", "security", "performance",
+             "testing", "concurrency", "microservices", "observability", "CI/CD",
+             "containerization", "serverless", "GraphQL", "event sourcing",
+             "domain-driven design", "zero-trust networking"]
+_PAPERS   = ["Smith et al. 2020", "Jones 2021", "Brown et al. 2019",
+             "the 2022 survey", "recent benchmarks", "Lee & Kim 2023",
+             "the Meta paper", "the Google Brain study", "Zhang et al. 2021"]
+_METRICS  = ["latency", "throughput", "error rate", "p99", "p95", "memory usage",
+             "CPU utilization", "request count", "apdex score", "RPS",
+             "cache hit rate", "queue depth", "GC pause time", "uptime"]
+_MODULES2 = ["service_a", "service_b", "legacy", "v2", "the new version",
+             "the old system", "the monolith"]
+_TERMS    = ["idempotency", "sharding", "consensus", "backpressure",
+             "eventual consistency", "CQRS", "event sourcing", "CAP theorem",
+             "the actor model", "optimistic locking", "two-phase commit"]
+_REPORT_SECTIONS = ["methodology", "results", "discussion", "introduction",
+                    "abstract", "conclusion", "related work", "background"]
+_CONFIG_FILES = [".env", "docker-compose.yml", "nginx.conf", "settings.py",
+                 "pyproject.toml", "Dockerfile", "k8s manifests", "terraform files"]
+_TOOLS    = ["pytest", "mypy", "flake8", "black", "pre-commit", "tox",
+             "coverage", "bandit", "ruff", "pydantic"]
+
+# ── Research-domain vocabulary ─────────────────────────────────────────────────
+_JOURNALS     = ["Nature", "Science", "ICML", "NeurIPS", "ICLR", "CVPR", "EMNLP",
+                 "PNAS", "JMLR", "arXiv", "ACL", "SIGIR", "KDD", "ICCV", "AAAI"]
+_STAT_TERMS   = ["p-value", "confidence interval", "effect size", "statistical significance",
+                 "Cohen's d", "AUC-ROC", "F1 score", "precision and recall",
+                 "t-test result", "chi-square", "Bonferroni correction", "power analysis",
+                 "sample size", "variance", "standard deviation"]
+_STUDY_TYPES  = ["RCT", "observational study", "meta-analysis", "systematic review",
+                 "case study", "longitudinal study", "ablation study", "pilot study",
+                 "replication study", "field experiment", "survey study"]
+_RESEARCH_TASKS = ["peer review", "IRB submission", "conference rebuttal", "camera-ready version",
+                   "preprint", "supplementary materials", "author response", "ethics review",
+                   "data collection protocol", "informed consent form"]
+
+# ── Support-domain vocabulary ──────────────────────────────────────────────────
+_INFRA        = ["kubectl", "helm", "terraform", "ansible", "systemd", "docker-compose",
+                 "podman", "HAProxy", "Vault", "Consul", "Nomad", "Packer"]
+_K8S_RESOURCES= ["pod", "deployment", "service", "ingress", "ConfigMap", "Secret",
+                 "namespace", "StatefulSet", "DaemonSet", "CronJob", "PVC", "HPA"]
+_LOG_LEVELS   = ["ERROR logs", "WARN messages", "DEBUG output", "access logs",
+                 "audit logs", "crash logs", "application logs", "stack trace",
+                 "core dump", "OOM logs"]
+_DEPLOY_ENVS  = ["production", "staging", "dev", "canary", "blue-green", "preprod",
+                 "the live environment", "my local setup", "the cluster"]
+_INCIDENTS    = ["the outage", "the incident", "the on-call alert", "the SLA breach",
+                 "the degradation", "the latency spike", "the service restart",
+                 "the failed deployment", "the rollback"]
+
+# ── Analysis-domain vocabulary ─────────────────────────────────────────────────
+_BI_TOOLS     = ["Looker", "Tableau", "Redash", "Superset", "Metabase", "Grafana",
+                 "BigQuery", "Snowflake", "dbt", "Airflow", "Spark", "Databricks",
+                 "Power BI", "Amplitude", "Mixpanel", "Segment"]
+_DATA_METRICS = ["DAU", "MAU", "retention rate", "churn rate", "conversion rate",
+                 "NPS score", "LTV", "ARPU", "GMV", "CAC", "funnel drop-off",
+                 "session duration", "bounce rate", "activation rate", "burn rate"]
+_CHART_TYPES  = ["funnel chart", "cohort table", "time-series graph", "scatter plot",
+                 "heatmap", "bar chart", "waterfall chart", "histogram", "sankey diagram",
+                 "retention curve", "burn-down chart"]
+_SQL_CONCEPTS = ["SQL query", "window function", "CTE", "aggregate query",
+                 "GROUP BY clause", "subquery", "JOIN condition", "partitioned table",
+                 "materialized view", "incremental model"]
+
+# ── General-domain vocabulary ──────────────────────────────────────────────────
+_DOC_TYPES    = ["RFC", "design doc", "PRD", "project brief", "meeting notes",
+                 "postmortem", "incident report", "architecture decision record",
+                 "SLA", "runbook", "playbook", "one-pager", "press release",
+                 "announcement", "newsletter", "changelog", "retrospective"]
+_WORK_PRODUCTS= ["roadmap", "sprint plan", "OKR", "RACI matrix", "risk register",
+                 "project charter", "stakeholder map", "comms plan", "release notes",
+                 "executive summary", "strategy deck", "business case"]
+_AUDIENCES    = ["the team", "new hires", "leadership", "customers", "stakeholders",
+                 "the board", "all hands", "external partners", "non-technical readers",
+                 "the on-call engineer"]
+
+
+def _sub(template: str, rng: random.Random) -> str:
+    return (template
+            .replace("{file}",           rng.choice(_FILES))
+            .replace("{func}",           rng.choice(_FUNCS))
+            .replace("{func2}",          rng.choice(_FUNCS2))
+            .replace("{module}",         rng.choice(_MODULES))
+            .replace("{module2}",        rng.choice(_MODULES2))
+            .replace("{class_name}",     rng.choice(_CLASSES))
+            .replace("{service}",        rng.choice(_SERVICES))
+            .replace("{action}",         rng.choice(_ACTIONS))
+            .replace("{endpoint}",       rng.choice(_ENDPOINTS))
+            .replace("{feature}",        rng.choice(_FEATURES))
+            .replace("{error}",          rng.choice(_ERRORS))
+            .replace("{topic}",          rng.choice(_TOPICS))
+            .replace("{paper}",          rng.choice(_PAPERS))
+            .replace("{metric}",         rng.choice(_METRICS))
+            .replace("{term}",           rng.choice(_TERMS))
+            .replace("{report_section}", rng.choice(_REPORT_SECTIONS))
+            .replace("{config_file}",    rng.choice(_CONFIG_FILES))
+            .replace("{tool}",           rng.choice(_TOOLS))
+            # research
+            .replace("{journal}",        rng.choice(_JOURNALS))
+            .replace("{stat_term}",      rng.choice(_STAT_TERMS))
+            .replace("{study_type}",     rng.choice(_STUDY_TYPES))
+            .replace("{research_task}",  rng.choice(_RESEARCH_TASKS))
+            # support
+            .replace("{infra}",          rng.choice(_INFRA))
+            .replace("{k8s}",            rng.choice(_K8S_RESOURCES))
+            .replace("{log}",            rng.choice(_LOG_LEVELS))
+            .replace("{env}",            rng.choice(_DEPLOY_ENVS))
+            .replace("{incident}",       rng.choice(_INCIDENTS))
+            # analysis
+            .replace("{bi_tool}",        rng.choice(_BI_TOOLS))
+            .replace("{data_metric}",    rng.choice(_DATA_METRICS))
+            .replace("{chart}",          rng.choice(_CHART_TYPES))
+            .replace("{sql}",            rng.choice(_SQL_CONCEPTS))
+            # general
+            .replace("{doc_type}",       rng.choice(_DOC_TYPES))
+            .replace("{work_product}",   rng.choice(_WORK_PRODUCTS))
+            .replace("{audience}",       rng.choice(_AUDIENCES)))
+
+
+# ── Augmentation helpers ───────────────────────────────────────────────────────
+
+_PREFIXES = [
+    "", "", "", "",                              # most have no prefix
+    "please ", "can you ", "i need you to ",
+    "help me ", "could you ", "i want to ",
+    "urgent: ", "quick question: ", "asap: ",
+    "hey, ", "so ", "btw ", "fyi: ",
+]
+
+_TYPOS = {
+    "fix": "fixx", "write": "wirte", "analyze": "analise",
+    "explain": "explian", "refactor": "refacor", "implement": "implment",
+    "create": "crate", "update": "updaet", "review": "reveiw",
+    "generate": "genreate", "configure": "cofigure",
+}
+
+
+def _augment(text: str, rng: random.Random) -> str:
+    if rng.random() < 0.12:
+        text = rng.choice(_PREFIXES) + text
+    r = rng.random()
+    if r < 0.06:
+        text = text.upper()
+    elif r < 0.12:
+        text = text.capitalize()
+    if rng.random() < 0.04:
+        for correct, typo in _TYPOS.items():
+            if correct in text:
+                text = text.replace(correct, typo, 1)
+                break
+    if rng.random() < 0.08:
+        text = text.rstrip(".") + rng.choice([".", "?", "!!", "..."])
+    return text
+
+
+# ── Template corpus ────────────────────────────────────────────────────────────
 
 _TEMPLATES: dict[tuple[str, str, str], list[str]] = {
 
-    # FOCUSED + MUTATIVE + coding
+    # ── FOCUSED + MUTATIVE ──────────────────────────────────────────────────────
+
     ("focused", "mutative", "coding"): [
+        "fix the bug in {func}",
         "fix the bug in {file}",
-        "patch the validation logic in {file}",
-        "the test is failing please fix it",
-        "repair the broken function",
-        "correct the off-by-one error",
-        "update the {func} method to handle null",
-        "remove the deprecated call in {file}",
-        "fix the type error in {file}",
-        "resolve the merge conflict in {file}",
-        "change the return type of {func}",
+        "patch the {func} function",
+        "patch the bug in {func}",
+        "repair the broken {func}",
+        "correct the off-by-one error in {func}",
+        "resolve the error in {func}",
+        "update {func} to handle null",
+        "update the {func} method to handle edge cases",
+        "remove the deprecated call to {func}",
+        "remove the dead code in {file}",
         "rename {func} to {func2}",
-        "add missing null check",
-        "fix the race condition in {file}",
+        "rename the {func} method",
+        "change the return type of {func}",
+        "change {func} to return a list",
+        "fix the type error in {file}",
+        "fix the failing test",
+        "fix the flaky test",
+        "resolve the merge conflict in {file}",
+        "add missing null check to {func}",
+        "add a null guard to {func}",
+        "add error handling to {func}",
+        "make {func} handle the empty case",
+        "the test is failing, fix it",
+        "the build is broken, fix {file}",
+        "convert {func} to use async",
+        "make {func} async",
+        "fix the race condition in {func}",
+        "fix the import in {file}",
+        "fix the broken import",
+        "correct the indentation in {file}",
+        "delete the unused variable in {func}",
+        "replace the hardcoded value in {func}",
+        "swap {func} for {func2}",
+        "update the regex in {func}",
+        "just fix the typo",
+        "quickly fix the bug in {func}",
+        "a small fix in {func}",
+        "minor fix in {file}",
+        "remove the print statement in {func}",
+        "fix the off-by-one in {func}",
+        "update the timeout value in {func}",
+        "change the default value of the parameter in {func}",
+        "fix the broken assertion in the test",
     ],
 
-    # FOCUSED + GENERATIVE + coding
+    ("focused", "mutative", "research"): [
+        "fix the typo in the abstract",
+        "correct the citation for {paper}",
+        "update the year in the bibliography",
+        "fix the broken reference",
+        "correct the formula in the notes",
+        "update the figure caption",
+        "fix the table formatting",
+        "correct a single data point",
+        "update one number in the results",
+        "fix the typo in the {report_section}",
+        "correct the author name in the reference",
+        "update the page numbers in the citation",
+        "fix the equation in the {report_section}",
+        "correct the units in the table",
+        "remove the duplicate reference",
+        "fix the broken hyperlink in the paper",
+        "update the date on the preprint",
+        "correct the footnote",
+        "fix the figure numbering",
+        "update the acknowledgements",
+        "fix the {stat_term} in the results section",
+        "correct the p-value reported for this test",
+        "update the sample size in the {report_section}",
+        "fix the axis label on figure 3",
+        "correct the effect size calculation",
+        "update the author list for {journal} submission",
+        "fix the formatting for {journal} style",
+        "correct the {study_type} description",
+        "update the IRB approval number",
+        "fix the camera-ready deadline in the submission",
+    ],
+
+    ("focused", "mutative", "support"): [
+        "fix my {service} config",
+        "update my config so {service} connects",
+        "correct the config entry for {service}",
+        "change the port in my config",
+        "update my {config_file}",
+        "fix the connection string",
+        "update the password in the config",
+        "fix the wrong hostname in {config_file}",
+        "change the timeout setting for {service}",
+        "correct the SSL certificate path",
+        "update the {service} version in requirements",
+        "fix the broken environment variable",
+        "set the correct API key in {config_file}",
+        "change the database name in the config",
+        "update the {tool} config",
+        "fix the {config_file} syntax error",
+        "correct the base URL in the config",
+        "update the retry limit in {config_file}",
+        "fix the log level setting",
+        "change the max connections in the config",
+        "fix the broken {infra} command",
+        "update the {k8s} spec",
+        "correct the {k8s} resource limits",
+        "fix the {infra} deployment script",
+        "patch the {infra} configuration file",
+        "restart the crashed {k8s}",
+        "fix the OOMKilled {k8s}",
+        "correct the image tag in the {k8s}",
+        "update the replica count in the {k8s}",
+        "fix the environment variable in the {k8s}",
+    ],
+
+    ("focused", "mutative", "analysis"): [
+        "fix the incorrect metric in the dashboard",
+        "correct the wrong statistic",
+        "update one data point in the report",
+        "fix the measurement formula",
+        "correct the chart label",
+        "fix the wrong unit in the graph",
+        "correct the percentage calculation",
+        "update the threshold value",
+        "fix the alert condition",
+        "correct the aggregation formula",
+        "update the time range on this chart",
+        "fix the axis label",
+        "correct the color coding in the chart",
+        "update the legend",
+        "fix the wrong filter on the dashboard",
+        "correct the baseline value",
+        "change the metric unit from ms to seconds",
+        "fix the null handling in the metric query",
+        "update the alert threshold for {metric}",
+        "correct the {metric} calculation formula",
+        "fix the wrong {data_metric} formula in {bi_tool}",
+        "correct the {chart} axis labels",
+        "update the {sql} to fix the wrong aggregation",
+        "fix the broken {sql} in the {bi_tool} dashboard",
+        "correct the {data_metric} definition",
+        "update the {bi_tool} filter for this chart",
+        "fix the {chart} color scale",
+        "correct the time zone offset in the {bi_tool} query",
+        "update the {data_metric} formula to include new cohorts",
+        "fix the JOIN in this {sql}",
+    ],
+
+    ("focused", "mutative", "general"): [
+        "fix the typo",
+        "edit this sentence",
+        "correct this paragraph",
+        "change this word",
+        "update the description of {topic}",
+        "fix a small mistake in the text",
+        "correct this bullet point",
+        "update this definition",
+        "fix the grammar in this sentence",
+        "change the title",
+        "reword this sentence",
+        "shorten this paragraph",
+        "fix the formatting of this list",
+        "update the date in this document",
+        "correct the name in this document",
+        "fix the broken link",
+        "update the version number",
+        "change the deadline in this doc",
+        "correct the team name",
+        "fix the spelling mistake",
+    ],
+
+    # ── FOCUSED + GENERATIVE ────────────────────────────────────────────────────
+
     ("focused", "generative", "coding"): [
         "write a test for {func}",
-        "add a unit test for the {func} method",
-        "create a helper function that {action}",
+        "add a unit test for {func}",
+        "write a unit test that covers {func}",
         "generate a stub for {func}",
+        "create a helper function that {action}",
         "write a docstring for {func}",
         "add a type annotation to {func}",
-        "create a mock for {service}",
-        "write a test that covers the edge case",
-        "add a simple wrapper around {func}",
+        "create a mock for {class_name}",
         "scaffold the {class_name} class",
+        "add a simple wrapper around {func}",
+        "write a test that covers the edge case in {func}",
+        "create a fixture for {class_name}",
+        "implement {func}",
+        "implement the {func} method",
+        "add {func} to {class_name}",
+        "write a one-liner that {action}",
+        "create a constant for the magic number",
+        "add a log statement to {func}",
+        "write a conftest for this module",
+        "add a __repr__ to {class_name}",
+        "generate a migration for this model change",
+        "create an alias for {func}",
+        "build a small helper that {action}",
+        "add a property to {class_name}",
+        "write a type alias for the return type",
+        "draft a skeleton for {func}",
+        "add a decorator for {func}",
+        "write a parametrized test for {func}",
+        "generate a factory for {class_name}",
+        "create a dataclass for this structure",
     ],
 
-    # FOCUSED + READONLY + coding
-    ("focused", "readonly", "coding"): [
-        "explain what {func} does",
-        "what does {file} do",
-        "show me how {func} works",
-        "read {file} and tell me the purpose",
-        "what is the return type of {func}",
-        "trace the call path to {func}",
-        "describe the {class_name} interface",
-    ],
-
-    # MODERATE + MUTATIVE + coding
-    ("moderate", "mutative", "coding"): [
-        "refactor the {module} module",
-        "migrate {file} from Python 2 to 3",
-        "update all calls to use the new API",
-        "replace the old authentication with JWT",
-        "convert the class to use dataclasses",
-        "rewrite the parser to handle edge cases",
-        "split {file} into smaller modules",
-        "extract the business logic from {file}",
-        "update the database schema and migrations",
-        "change the serialization format",
-        "upgrade dependencies in {file}",
-    ],
-
-    # MODERATE + GENERATIVE + coding
-    ("moderate", "generative", "coding"): [
-        "add a rate limiter to the API",
-        "write tests for the {module} module",
-        "implement pagination for the {endpoint} endpoint",
-        "add logging to the {module} service",
-        "create a caching layer for {func}",
-        "implement retry logic",
-        "add input validation to {func}",
-        "write integration tests for {module}",
-        "implement the {feature} feature",
-        "add error handling to the {module}",
-        "build a CLI for {module}",
-    ],
-
-    # MODERATE + READONLY + coding
-    ("moderate", "readonly", "coding"): [
-        "review the {module} module",
-        "audit the security of {file}",
-        "analyze the performance of {module}",
-        "check the test coverage for {module}",
-        "review the API design of {module}",
-        "look for bugs in {module}",
-    ],
-
-    # EXPANSIVE + MUTATIVE + coding
-    ("expansive", "mutative", "coding"): [
-        "rewrite the entire {module} from scratch",
-        "migrate the whole codebase to TypeScript",
-        "refactor the entire authentication system",
-        "update all files to use the new framework",
-        "migrate from REST to GraphQL across the codebase",
-        "rewrite the database layer",
-        "overhaul the entire error handling",
-        "migrate all tests to pytest",
-        "port the application to async/await",
-    ],
-
-    # EXPANSIVE + GENERATIVE + coding
-    ("expansive", "generative", "coding"): [
-        "implement a complete CI/CD pipeline",
-        "build a full authentication system",
-        "create a comprehensive test suite",
-        "generate a complete SDK for the API",
-        "implement the entire payment flow",
-        "build a plugin architecture",
-        "create a full observability stack",
-    ],
-
-    # EXPANSIVE + READONLY + coding
-    ("expansive", "readonly", "coding"): [
-        "analyze the entire codebase architecture",
-        "give me a comprehensive review of the repo",
-        "audit all the security vulnerabilities",
-        "map out all the dependencies in the project",
-        "review the entire test suite",
-        "document all public APIs",
-        "trace all code paths from the entry point",
-    ],
-
-    # FOCUSED + MUTATIVE + research
-    ("focused", "mutative", "research"): [
-        "update the citation for {paper}",
-        "correct the formula in the notes",
-        "fix the reference list",
-        "update the year in the bibliography",
-    ],
-
-    # FOCUSED + GENERATIVE + research
     ("focused", "generative", "research"): [
         "write a brief summary of {paper}",
         "generate a one-paragraph abstract",
         "create a citation for {paper}",
         "draft a short introduction paragraph",
+        "write a one-sentence description of {topic}",
+        "generate a footnote for this claim",
+        "write a brief definition of {term}",
+        "create a one-slide summary of the findings",
+        "draft a short related work paragraph",
+        "write a research question for this study",
+        "generate a hypothesis for this experiment",
+        "create a short methods description",
+        "write a brief background paragraph on {topic}",
+        "draft a caption for this figure",
+        "write a short note on the limitations",
+        "generate a one-paragraph summary of {paper}",
+        "write a brief critique of {paper}",
+        "create a short annotation for {paper}",
+        "draft a key takeaway from {paper}",
+        "write a one-line description of {term}",
+        "draft a short author bio for the {journal} submission",
+        "write a brief description of the {study_type}",
+        "generate a single hypothesis for the experiment",
+        "draft an ethics statement for the IRB",
+        "write a one-paragraph {research_task}",
+        "create a brief data availability statement",
+        "draft a conflict of interest disclosure",
+        "write a short response to reviewer 2",
+        "generate a single figure description",
+        "draft a one-sentence contribution statement",
     ],
 
-    # FOCUSED + READONLY + research
+    ("focused", "generative", "support"): [
+        "show me how to configure {service}",
+        "give me a config snippet for {service}",
+        "write a quick example of {action}",
+        "show me one example query",
+        "give me a sample {service} connection string",
+        "write a minimal config for {service}",
+        "give me an example {config_file}",
+        "write a one-liner to start {service}",
+        "show me how to install {service}",
+        "give me the command to restart {service}",
+        "write a simple health check for {service}",
+        "show me how to connect to {service}",
+        "give me a quick start for {service}",
+        "write a sample environment variable for {service}",
+        "show me a minimal {tool} config",
+        "give me a working example of {action}",
+        "write a snippet to test the {service} connection",
+        "show me how to enable {feature} in {service}",
+        "give me an example docker run command for {service}",
+        "write a basic setup script for {service}",
+        "give me the {infra} command to deploy this",
+        "show me the {k8s} manifest for a single replica",
+        "write a simple {infra} script to restart {service}",
+        "give me the kubectl command to check {log}",
+        "show me how to roll back with {infra}",
+        "write a health check probe for the {k8s}",
+        "give me a minimal {config_file} for {env}",
+        "show me the {infra} command to scale down",
+        "write a one-liner to tail the {log}",
+        "give me the command to describe the failing {k8s}",
+    ],
+
+    ("focused", "generative", "analysis"): [
+        "create a chart for {metric}",
+        "generate a one-page report on {metric}",
+        "write a summary of the benchmark results",
+        "produce a table of {metric} values",
+        "make a simple visualization for {metric}",
+        "create a bar chart of {metric}",
+        "write a short analysis of {metric}",
+        "generate a sparkline for {metric}",
+        "make a single dashboard panel for {metric}",
+        "create a time-series plot of {metric}",
+        "write a summary of the latest test run",
+        "generate a one-line status for {metric}",
+        "create a heatmap for {metric}",
+        "produce a histogram of {metric}",
+        "write a comment explaining the {metric} trend",
+        "generate a single metric card for {metric}",
+        "create a comparison table for two runs",
+        "write a brief interpretation of the {metric} graph",
+        "produce a regression plot for {metric}",
+        "create a gauge widget for {metric}",
+        "build a single {chart} for {data_metric} in {bi_tool}",
+        "write a {sql} to pull {data_metric}",
+        "create a {bi_tool} panel for {data_metric}",
+        "generate a weekly {data_metric} summary",
+        "write a {sql} for the {chart}",
+        "create a {chart} showing {data_metric} over time",
+        "produce a single {bi_tool} tile for {metric}",
+        "write a dbt model for {data_metric}",
+        "generate a {chart} comparing {data_metric} by cohort",
+        "create a {bi_tool} metric definition for {data_metric}",
+    ],
+
+    ("focused", "generative", "general"): [
+        "write a short description of {topic}",
+        "draft a brief note on {topic}",
+        "create a one-sentence summary of {topic}",
+        "write a quick email about {topic}",
+        "make a short list of pros and cons of {topic}",
+        "generate a brief definition of {term}",
+        "write a short bio for a conference",
+        "draft a one-paragraph intro for {topic}",
+        "create a short FAQ entry about {topic}",
+        "write a brief tweet about {topic}",
+        "draft a short agenda item about {topic}",
+        "create a one-line tagline for {topic}",
+        "write a short abstract about {topic}",
+        "generate a quick summary of {topic}",
+        "draft a brief status update about {topic}",
+        "create a short description for the README",
+        "write a changelog entry for this change",
+        "draft a short announcement about {topic}",
+        "create a one-paragraph overview of {term}",
+        "write a brief explanation of {topic} for non-technical readers",
+        "draft a one-line entry for the {doc_type}",
+        "write a brief section in the {work_product}",
+        "create a short update for {audience}",
+        "draft a quick {doc_type} for this decision",
+        "write a one-paragraph summary for {audience}",
+        "create a brief {doc_type} template",
+        "draft a one-sentence OKR",
+        "write a short retrospective action item",
+        "create a brief risk entry for the {work_product}",
+        "draft a short status update for {audience}",
+    ],
+
+    # ── FOCUSED + READONLY ──────────────────────────────────────────────────────
+
+    ("focused", "readonly", "coding"): [
+        "explain what {func} does",
+        "what does {func} do",
+        "what does {file} do",
+        "show me how {func} works",
+        "describe the {class_name} interface",
+        "what is the return type of {func}",
+        "trace the call path to {func}",
+        "read {file} and summarize it",
+        "find where {func} is called",
+        "what arguments does {func} take",
+        "is {func} thread-safe",
+        "how is {class_name} instantiated",
+        "look at {func} and tell me what it does",
+        "check if {func} handles null",
+        "identify the inputs to {func}",
+        "what does this line do",
+        "why does {func} return None",
+        "does {func} raise exceptions",
+        "what is the purpose of {file}",
+        "inspect {func} for me",
+        "what are the side effects of {func}",
+        "is {func} deprecated",
+        "what version of {tool} do we use",
+        "show me the signature of {func}",
+        "where is {class_name} defined",
+    ],
+
     ("focused", "readonly", "research"): [
         "what does {paper} say about {topic}",
         "find the key findings in {paper}",
         "what are the limitations of {paper}",
         "summarize the methodology of {paper}",
+        "what is the conclusion of {paper}",
+        "check the sample size in {paper}",
+        "what metric does {paper} use",
+        "who are the authors of {paper}",
+        "what dataset did {paper} use",
+        "when was {paper} published",
+        "what is the main contribution of {paper}",
+        "does {paper} cite any related work on {topic}",
+        "what is the definition of {term} in {paper}",
+        "what does the abstract of {paper} say",
+        "find the p-value in {paper}",
+        "what benchmark did {paper} use",
+        "what are the future work suggestions in {paper}",
+        "what experiment does {paper} describe",
+        "what model does {paper} propose",
+        "what is the accuracy reported in {paper}",
+        "what is the {stat_term} reported in {paper}",
+        "is {paper} published in {journal}",
+        "what {study_type} did {paper} conduct",
+        "what is the confidence interval in {paper}",
+        "did {paper} do an ablation study",
+        "what was the baseline in {paper}",
+        "how many participants were in {paper}",
+        "what is the reproducibility of {paper}",
+        "did {paper} release their code",
+        "what are the ethical considerations in {paper}",
     ],
 
-    # MODERATE + MUTATIVE + research
+    ("focused", "readonly", "support"): [
+        "why is {service} returning {error}",
+        "what does {error} mean",
+        "explain this error: {error}",
+        "how do I fix {error}",
+        "why am I getting {error}",
+        "help me understand {error}",
+        "what causes {error}",
+        "why doesn't {func} work",
+        "why is my code broken",
+        "what is wrong here",
+        "why is {service} not connecting",
+        "what does this error message mean",
+        "why is {service} throwing {error}",
+        "how do I read this stack trace",
+        "what does {error} mean in {service}",
+        "is {error} a known issue with {service}",
+        "why is my {service} crashing",
+        "how do I debug {error}",
+        "what log level shows {error}",
+        "where do I find logs for {service}",
+        "why is the {k8s} in CrashLoopBackOff",
+        "what do these {log} say",
+        "why did the {infra} apply fail",
+        "why is the {k8s} OOMKilled",
+        "what caused {incident}",
+        "why is {env} down",
+        "how do I read the {log}",
+        "why is the {k8s} pending",
+        "what does this {infra} error mean",
+        "why did the deployment to {env} fail",
+    ],
+
+    ("focused", "readonly", "analysis"): [
+        "what is the p99 latency",
+        "check the error rate",
+        "what is the {metric} right now",
+        "show me the current {metric}",
+        "is {metric} within acceptable range",
+        "read the {metric} from the dashboard",
+        "what is today's {metric}",
+        "check if the {metric} is spiking",
+        "what was the {metric} yesterday",
+        "is the {metric} degrading",
+        "what does the {metric} graph show",
+        "read me the latest {metric}",
+        "is {metric} above the threshold",
+        "what time did {metric} peak",
+        "how long has {metric} been elevated",
+        "what is the baseline for {metric}",
+        "is there an anomaly in {metric}",
+        "check the current {metric} trend",
+        "what does this data point mean for {metric}",
+        "show me the {metric} for the last hour",
+        "what is the current {data_metric}",
+        "check the {data_metric} in {bi_tool}",
+        "show me the {chart} for {data_metric}",
+        "what does this {sql} return",
+        "is the {data_metric} above target",
+        "read the {data_metric} from the {bi_tool} dashboard",
+        "what does this {chart} tell us",
+        "is the {data_metric} trending up or down",
+        "how does {data_metric} look this week",
+        "what is the {data_metric} breakdown by cohort",
+    ],
+
+    ("focused", "readonly", "general"): [
+        "what is {topic}",
+        "tell me about {topic}",
+        "what does {term} mean",
+        "how does {topic} work",
+        "give me a quick explanation of {term}",
+        "define {term}",
+        "what is the difference between {term} and {topic}",
+        "explain {term} to me",
+        "what is {topic} used for",
+        "when would I use {term}",
+        "what is the definition of {term}",
+        "tell me a bit about {topic}",
+        "why does {topic} matter",
+        "what problem does {term} solve",
+        "what is an example of {term}",
+        "who invented {topic}",
+        "is {topic} still relevant",
+        "how popular is {topic}",
+        "what are the trade-offs of {term}",
+        "what is the short version of {topic}",
+        "what is a {doc_type}",
+        "what does {work_product} mean",
+        "explain the {doc_type} process",
+        "what goes into a {work_product}",
+        "what is an OKR",
+        "what is a RACI matrix",
+        "what is the difference between a {doc_type} and a {doc_type}",
+        "how does a retrospective work",
+        "what is {topic} in simple terms",
+        "what is the purpose of a {doc_type}",
+    ],
+
+    # ── MODERATE + MUTATIVE ─────────────────────────────────────────────────────
+
+    ("moderate", "mutative", "coding"): [
+        "refactor the {module} module",
+        "refactor all files in {module}",
+        "migrate {file} from Python 2 to 3",
+        "update all calls to the deprecated {func} API",
+        "replace the old authentication with JWT throughout {module}",
+        "convert the {module} classes to use dataclasses",
+        "rewrite the {module} parser to handle edge cases",
+        "split {file} into smaller modules",
+        "extract the business logic from {module}",
+        "update the database schema and run migrations",
+        "change the serialization format in {module}",
+        "upgrade all dependencies in {module}",
+        "fix all the type errors in {module}",
+        "add error handling throughout {module}",
+        "update all the tests in {module}",
+        "migrate {module} from callbacks to async",
+        "replace all usages of {func} with {func2}",
+        "clean up the {module} module",
+        "standardize the logging format across {module}",
+        "update {module} to use the new config system",
+        "fix the broken tests in {module}",
+        "update all the API endpoints to return consistent errors",
+        "rename all occurrences of {func} to {func2}",
+        "remove all deprecated methods from {class_name}",
+        "convert all the tests in {module} to use fixtures",
+        "upgrade the {module} service to the latest framework version",
+        "refactor {module} to separate concerns",
+        "update all the models in {module} to use the new base class",
+        "fix all linting errors in {module}",
+        "migrate {module} to use environment-based configuration",
+    ],
+
     ("moderate", "mutative", "research"): [
         "update the literature review section",
         "revise the findings based on new data",
-        "rewrite the methodology section",
+        "rewrite the {report_section} section",
         "update the analysis with the latest numbers",
+        "revise all the citations",
+        "update the entire {report_section} section",
+        "rewrite the discussion based on reviewer feedback",
+        "update all figures and tables in the paper",
+        "revise the {report_section} and {report_section}",
+        "restructure the argument in the {report_section}",
+        "update the statistical analysis",
+        "revise all the hypotheses based on new evidence",
+        "rewrite the related work section",
+        "update the paper to address reviewer comments",
+        "fix all inconsistencies in the data tables",
+        "revise the baseline comparisons",
+        "update the notation throughout the paper",
+        "correct all the equations in the {report_section}",
+        "rewrite the evaluation section with new benchmarks",
+        "update the references throughout",
+        "address all {journal} reviewer comments",
+        "update all {stat_term} calculations after re-analysis",
+        "revise the {study_type} protocol based on IRB feedback",
+        "rewrite the {research_task} for the {journal} submission",
+        "update all figures to meet {journal} formatting requirements",
+        "revise the peer review response point by point",
+        "fix all statistical errors flagged by the reviewer",
+        "update the ablation study with new baselines",
+        "restructure the paper for {journal} format",
+        "revise all experiments to address reproducibility concerns",
     ],
 
-    # MODERATE + GENERATIVE + research
+    ("moderate", "mutative", "support"): [
+        "update my project to fix all the dependency conflicts",
+        "resolve all the configuration errors",
+        "update all settings for {service} to work with the new version",
+        "fix all the broken connections in my setup",
+        "migrate my config from v1 to v2 format",
+        "update all environment variables for the new deployment",
+        "fix all the permission issues in my {service} setup",
+        "migrate my {service} configs to the new format",
+        "update all my {tool} settings",
+        "resolve all the SSL certificate issues",
+        "upgrade all my services to the latest versions",
+        "fix all the network configuration issues",
+        "update all the secrets in my deployment",
+        "migrate all my {config_file} files to the new schema",
+        "fix all the broken service connections",
+        "update my entire {service} cluster configuration",
+        "resolve all the authentication issues in my setup",
+        "fix all the firewall rules for my services",
+        "update all the resource limits in my config",
+        "migrate all my services to use {service}",
+        "fix all the {k8s} resource limits across the cluster",
+        "update all {infra} scripts for the new {env} environment",
+        "migrate all {k8s} configs to the new namespace",
+        "resolve all {incident} related configuration issues",
+        "update all {infra} variables for {env}",
+        "fix all the broken {k8s} health checks",
+        "update all service {k8s} replicas",
+        "migrate all {config_file} files to the new {infra} format",
+        "fix all the {log} ingestion issues",
+        "resolve all {env} connection failures",
+    ],
+
+    ("moderate", "mutative", "analysis"): [
+        "update the analysis with the new data",
+        "revise the performance baselines for {module}",
+        "update all the dashboards to use the new metrics",
+        "fix the wrong metrics across the report",
+        "recalculate all the benchmark results",
+        "update all charts in the performance report",
+        "revise all the KPI thresholds",
+        "fix all the metric labels in the dashboards",
+        "migrate all dashboards to the new format",
+        "update the alerting rules for {metric}",
+        "revise all the capacity estimates",
+        "fix all the broken metric queries",
+        "update all the SLO definitions",
+        "recalculate the baselines for all {metric} metrics",
+        "fix all the panel queries in the dashboard",
+        "update the monitoring configuration for all services",
+        "revise all the anomaly detection rules",
+        "fix all the incorrect alert conditions",
+        "update all the metric retention policies",
+        "migrate all alerting rules to the new system",
+    ],
+
+    ("moderate", "mutative", "general"): [
+        "rewrite this section",
+        "revise the entire document",
+        "update all the examples in the guide",
+        "rewrite the introduction and conclusion",
+        "fix all the errors in the draft",
+        "update the plan based on new constraints",
+        "revise all the action items",
+        "rewrite the project proposal",
+        "update all the milestones in the plan",
+        "fix all the inconsistencies in the document",
+        "revise all the descriptions",
+        "update the entire knowledge base article",
+        "rewrite the training materials",
+        "update all the diagrams in the document",
+        "fix all the broken links",
+        "revise the entire onboarding guide",
+        "update all the screenshots",
+        "rewrite the user manual",
+        "update all the process descriptions",
+        "fix all the outdated information in the wiki",
+    ],
+
+    # ── MODERATE + GENERATIVE ───────────────────────────────────────────────────
+
+    ("moderate", "generative", "coding"): [
+        "add a rate limiter to the {module} API",
+        "write tests for the entire {module} module",
+        "implement pagination for all {endpoint} endpoints",
+        "add logging throughout the {module} service",
+        "create a caching layer for {module}",
+        "implement retry logic with backoff",
+        "add input validation to the {module} handlers",
+        "write integration tests for {module}",
+        "implement the {feature} feature in {module}",
+        "build a CLI for {module}",
+        "add metrics collection to {module}",
+        "implement a background job for {action}",
+        "create a middleware for authentication in {module}",
+        "add webhook support to {module}",
+        "write a comprehensive test suite for {module}",
+        "implement the full CRUD for {class_name}",
+        "add rate limiting and throttling to {module}",
+        "create an SDK for the {module} API",
+        "build a plugin system for {module}",
+        "implement {feature} end to end",
+        "add health checks to all services",
+        "write load tests for {module}",
+        "implement the {class_name} service layer",
+        "generate all the boilerplate for {module}",
+        "create a REST API for {module}",
+        "add audit logging to all {module} endpoints",
+        "implement role-based access control for {module}",
+        "build a task queue for {module}",
+        "add search functionality to {module}",
+        "implement event sourcing for {module}",
+    ],
+
     ("moderate", "generative", "research"): [
         "write a literature review on {topic}",
         "generate a survey of recent papers on {topic}",
         "compile findings from multiple studies on {topic}",
         "write a comparative analysis of {topic}",
         "create an annotated bibliography for {topic}",
+        "write a structured review of the evidence for {topic}",
+        "produce a state-of-the-art overview of {topic}",
+        "generate a research proposal on {topic}",
+        "write a systematic review of {topic}",
+        "compile a meta-analysis of findings on {topic}",
+        "write a comprehensive review of all work on {topic}",
+        "draft a grant application section on {topic}",
+        "produce a narrative review of {topic}",
+        "write an evaluation of methods for {topic}",
+        "create a comparison of approaches to {topic}",
+        "write a background chapter on {topic}",
+        "draft a related work section covering {topic}",
+        "create a research roadmap for {topic}",
+        "produce a scoping review of {topic}",
+        "write an empirical study plan for {topic}",
+        "write a {study_type} protocol for {topic}",
+        "draft the {research_task} for our {journal} submission",
+        "produce a review paper comparing all {study_type} approaches on {topic}",
+        "generate a complete {journal}-style paper outline on {topic}",
+        "write the methods and {report_section} sections for the paper",
+        "create a peer review response for the {journal} submission",
+        "draft the supplementary materials for {paper}",
+        "write an IRB protocol for a study on {topic}",
+        "produce a grant narrative covering all aspects of {topic}",
+        "create a preprint covering our findings on {topic}",
     ],
 
-    # MODERATE + READONLY + research
+    ("moderate", "generative", "support"): [
+        "help me set up a complete {service} environment",
+        "walk me through the full setup process for {service}",
+        "write a setup guide for {service}",
+        "create a complete configuration for {service}",
+        "build a runbook for deploying {service}",
+        "write step-by-step instructions for {action}",
+        "create a getting started guide for {service}",
+        "write a troubleshooting guide for common {service} issues",
+        "build a deployment checklist for {service}",
+        "create a migration guide from {service} to {service}",
+        "write an operations playbook for {service}",
+        "create a configuration reference for all {service} options",
+        "write a complete integration guide for {service}",
+        "build a testing guide for {service}",
+        "create an upgrade guide for {service}",
+        "write a performance tuning guide for {service}",
+        "create a security hardening guide for {service}",
+        "build a monitoring setup guide for {service}",
+        "write a backup and recovery guide for {service}",
+        "create a complete administration guide for {service}",
+        "write a {infra} deployment guide for {service}",
+        "build a {k8s} manifest set for {service}",
+        "create an {infra} runbook for handling {incident}",
+        "write a postmortem template for {incident}",
+        "build all {infra} scripts to set up {env}",
+        "create a {infra} migration guide to {env}",
+        "write a troubleshooting guide for {k8s} issues",
+        "build a disaster recovery runbook for {service}",
+        "create an on-call guide for {incident}",
+        "write the {log} analysis guide for {service}",
+    ],
+
+    ("moderate", "generative", "analysis"): [
+        "generate a performance report for the past month",
+        "create visualizations for all the {metric} data",
+        "build a dashboard for {module} statistics",
+        "write a full analysis of the failure patterns",
+        "produce a weekly report on {metric}",
+        "create a benchmarking report for {module}",
+        "generate a capacity planning report",
+        "build a comprehensive metrics dashboard",
+        "create a trend analysis for {metric}",
+        "produce a quarterly performance summary",
+        "generate a full incident report",
+        "create a cost analysis report",
+        "build a load testing report for {module}",
+        "generate a resource utilization report",
+        "create an SLO compliance report",
+        "produce an alerting effectiveness report",
+        "build a regression analysis for {metric}",
+        "generate a performance comparison report",
+        "create a reliability report for all services",
+        "produce a burn rate analysis for {metric}",
+        "build a {bi_tool} dashboard covering all {data_metric} metrics",
+        "create {chart} visualizations for all key {data_metric} KPIs",
+        "write a {sql} pipeline for the weekly {data_metric} report",
+        "generate a cohort analysis for {data_metric} in {bi_tool}",
+        "build a funnel analysis report for {data_metric}",
+        "create a dbt model covering all {data_metric} definitions",
+        "produce a {bi_tool} report comparing {data_metric} across segments",
+        "build all {sql} queries for the {data_metric} data warehouse",
+        "generate a retention analysis using {bi_tool}",
+        "create a full {data_metric} attribution model",
+    ],
+
+    ("moderate", "generative", "general"): [
+        "write an article about {topic}",
+        "create a presentation on {topic}",
+        "draft a project proposal for {topic}",
+        "write a tutorial on {topic}",
+        "create a guide covering all aspects of {topic}",
+        "produce a FAQ document on {topic}",
+        "write a comprehensive blog post about {topic}",
+        "create a course outline on {topic}",
+        "write a technical overview of {topic}",
+        "produce a white paper on {topic}",
+        "draft a specification document for {topic}",
+        "create a decision matrix for {topic}",
+        "write a comparison guide for {topic}",
+        "produce a best practices document on {topic}",
+        "create a risk assessment for {topic}",
+        "write a training module on {topic}",
+        "draft an RFC for {topic}",
+        "produce a strategy document on {topic}",
+        "create a runbook for {topic}",
+        "write an evaluation report on {topic}",
+        "write a full {doc_type} for this project",
+        "create a complete {work_product} for the team",
+        "draft a {doc_type} covering all the key decisions",
+        "produce a {work_product} for {audience}",
+        "write a {doc_type} template for the whole team",
+        "create a full OKR set for the quarter",
+        "draft a complete sprint retrospective",
+        "produce a {doc_type} explaining the new process for {audience}",
+        "write a comprehensive {work_product} covering all scenarios",
+        "create a complete {doc_type} from scratch for {audience}",
+    ],
+
+    # ── MODERATE + READONLY ─────────────────────────────────────────────────────
+
+    ("moderate", "readonly", "coding"): [
+        "review the entire {module} module",
+        "audit the security of all files in {module}",
+        "analyze the performance of {module}",
+        "check the test coverage across {module}",
+        "review the API design of {module}",
+        "look for bugs throughout {module}",
+        "find all the N+1 queries in {module}",
+        "identify all the security vulnerabilities in {module}",
+        "profile the {module} service",
+        "trace all the call paths through {module}",
+        "find all usages of {func} in the codebase",
+        "check all the error handling in {module}",
+        "review all the type annotations in {module}",
+        "audit the dependencies of {module}",
+        "evaluate the code quality of {module}",
+        "inspect all the database queries in {module}",
+        "review all the authentication flows in {module}",
+        "find all the race conditions in {module}",
+        "audit the logging in {module}",
+        "evaluate all the test cases in {module}",
+    ],
+
     ("moderate", "readonly", "research"): [
         "research what the literature says about {topic}",
         "compare studies on {topic}",
         "review recent papers on {topic}",
         "analyze the evidence for {topic}",
         "find contradictions in the research on {topic}",
+        "survey the current state of {topic}",
+        "identify gaps in the literature on {topic}",
+        "review all the relevant papers on {topic}",
+        "analyze methodological differences in {topic} research",
+        "evaluate the quality of evidence for {topic}",
+        "compare {topic} across multiple papers",
+        "identify the consensus on {topic} in the literature",
+        "review all experimental results on {topic}",
+        "analyze citations patterns in {topic}",
+        "find all conflicting results on {topic}",
+        "review the research design of studies on {topic}",
+        "identify all claimed findings on {topic}",
+        "compare approaches used in papers on {topic}",
+        "analyze the replication crisis in {topic}",
+        "review all datasets used in {topic} research",
+        "evaluate all {stat_term} results across studies on {topic}",
+        "compare {study_type} designs in {topic} research",
+        "find all papers in {journal} on {topic}",
+        "analyze the peer review quality of papers on {topic}",
+        "review all ablation studies in {topic} papers",
+        "identify which {study_type} approaches dominate {topic}",
+        "compare baseline methods across {topic} papers",
+        "review the reproducibility of findings in {topic}",
+        "find all papers that contradict {paper}",
+        "evaluate the quality of evidence across all {study_type} papers on {topic}",
     ],
 
-    # EXPANSIVE + MUTATIVE + research
+    ("moderate", "readonly", "support"): [
+        "explain the entire {service} authentication flow",
+        "walk me through how {service} works end to end",
+        "help me understand the whole {module} system",
+        "trace the request flow through {module}",
+        "explain all the steps in the {action} pipeline",
+        "walk me through the full {service} deployment process",
+        "explain all the error modes in {service}",
+        "describe the complete data flow in {module}",
+        "trace all the network calls in {module}",
+        "explain the entire lifecycle of a {service} request",
+        "walk me through how {service} handles {error}",
+        "describe all the configuration options for {service}",
+        "explain the entire setup procedure for {service}",
+        "trace all the dependencies in my {service} setup",
+        "explain how {service} integrates with {service}",
+        "describe the full failure modes of {service}",
+        "walk me through all the logs in {service}",
+        "explain the complete networking setup for {service}",
+        "describe the entire {service} permission model",
+        "trace through the entire {service} startup sequence",
+        "walk me through all the {k8s} resources in this cluster",
+        "explain what happened during {incident}",
+        "trace the root cause of {incident}",
+        "describe all the {infra} components in {env}",
+        "explain the full {infra} pipeline",
+        "walk me through the {log} from {incident}",
+        "describe how {infra} manages the {k8s} resources",
+        "explain all the steps in the {infra} deployment",
+        "trace all the {k8s} events during {incident}",
+        "describe the entire {env} infrastructure",
+    ],
+
+    ("moderate", "readonly", "analysis"): [
+        "analyze all performance metrics for {module}",
+        "benchmark {module} against the baseline",
+        "profile all the endpoints in {module}",
+        "measure latency across all {endpoint} calls",
+        "compare {module} vs {module2} performance",
+        "audit the resource usage of {module}",
+        "evaluate the overall throughput of {module}",
+        "review all code quality metrics for {module}",
+        "analyze all the {metric} trends over the past month",
+        "evaluate all performance regressions in {module}",
+        "review the error patterns across all services",
+        "profile all the database queries in {module}",
+        "analyze the memory usage patterns in {module}",
+        "measure all the SLO violations",
+        "evaluate the on-call alert quality",
+        "review all the slowest endpoints",
+        "analyze the traffic patterns across all {endpoint} routes",
+        "benchmark all the caching strategies in {module}",
+        "evaluate the effectiveness of all alerting rules",
+        "review all the performance metrics for the last quarter",
+        "analyze all {data_metric} trends in {bi_tool}",
+        "review all {chart} reports for the past quarter",
+        "evaluate all {sql} queries for performance",
+        "compare {data_metric} across all user segments",
+        "analyze the {data_metric} funnel from top to bottom",
+        "review all {bi_tool} dashboards for accuracy",
+        "profile all {sql} queries in the data warehouse",
+        "evaluate the {data_metric} cohort retention over 90 days",
+        "analyze all {data_metric} anomalies over the past month",
+        "review all {bi_tool} metric definitions for correctness",
+    ],
+
+    ("moderate", "readonly", "general"): [
+        "explain {topic} in detail",
+        "give me a thorough overview of {topic}",
+        "describe all aspects of {topic}",
+        "analyze the pros and cons of {topic}",
+        "compare approaches to {topic}",
+        "review the landscape of {topic}",
+        "give me a comprehensive explanation of {term}",
+        "describe all the trade-offs of {topic}",
+        "walk me through all the implications of {topic}",
+        "explain all the concepts related to {topic}",
+        "review all the arguments for and against {topic}",
+        "describe the complete history of {topic}",
+        "analyze all the use cases for {term}",
+        "explain the full context of {topic}",
+        "review all the relevant considerations for {topic}",
+        "walk me through all the options for {topic}",
+        "describe all the key players in {topic}",
+        "explain all the components of {term}",
+        "analyze all the failure modes of {topic}",
+        "review everything I need to know about {topic}",
+        "walk me through all the steps in our {work_product}",
+        "explain all the sections of this {doc_type}",
+        "describe all the roles in our {work_product}",
+        "analyze all the risks in this {doc_type}",
+        "review all the OKRs for this quarter",
+        "explain the whole {doc_type} process to {audience}",
+        "describe all the stakeholders for this {work_product}",
+        "walk me through the complete {doc_type}",
+        "review all the {work_product} items before the meeting",
+        "explain the full context of this {doc_type}",
+    ],
+
+    # ── EXPANSIVE + MUTATIVE ────────────────────────────────────────────────────
+
+    ("expansive", "mutative", "coding"): [
+        "rewrite the entire {module} from scratch",
+        "migrate the whole codebase to TypeScript",
+        "refactor the entire authentication system",
+        "update all files to use the new framework",
+        "migrate from REST to GraphQL across the entire codebase",
+        "rewrite the whole database layer",
+        "overhaul the entire error handling across all services",
+        "migrate all tests to pytest",
+        "port the entire application to async",
+        "upgrade all dependencies across every package",
+        "refactor every service to use dependency injection",
+        "replace all global state throughout the codebase",
+        "standardize all logging across every module",
+        "rewrite all the API handlers to follow REST conventions",
+        "migrate everything from Python 2 to Python 3",
+        "refactor the entire test suite",
+        "convert all models to use SQLAlchemy 2.0 across the repo",
+        "replace every use of {func} with {func2} project-wide",
+        "clean up all the dead code across the entire project",
+        "migrate the entire infrastructure to terraform",
+        "rewrite the complete data pipeline from scratch",
+        "standardize error handling across every service",
+        "migrate the whole backend to microservices",
+        "replace all synchronous code with async throughout the system",
+        "overhaul the entire security model across the codebase",
+    ],
+
     ("expansive", "mutative", "research"): [
         "rewrite the entire research proposal",
-        "revise all sections of the paper",
-        "update the complete methodology and results",
+        "revise every section of the paper",
+        "update the complete methodology, results, and discussion",
+        "overhaul the entire research program",
+        "restructure the whole dissertation",
+        "rewrite the entire thesis from scratch",
+        "revise all chapters of the monograph",
+        "overhaul the complete experimental design",
+        "rewrite the entire grant application",
+        "restructure the whole research agenda",
+        "revise every figure and table in the paper",
+        "rewrite all the study protocols",
+        "update the complete dataset and re-run all analyses",
+        "revise every section based on peer review",
+        "overhaul the entire literature basis of the work",
     ],
 
-    # EXPANSIVE + GENERATIVE + research
+    ("expansive", "mutative", "support"): [
+        "overhaul my entire infrastructure configuration",
+        "migrate my whole stack to kubernetes",
+        "redo the entire deployment setup",
+        "restructure my entire CI/CD pipeline",
+        "replace my whole monitoring setup",
+        "overhaul all my infrastructure as code",
+        "migrate everything to a new cloud provider",
+        "redo the entire networking setup",
+        "replace all my services with managed alternatives",
+        "restructure my whole deployment strategy",
+        "overhaul my entire security posture",
+        "migrate all my services to containers",
+        "redo all my environment configurations from scratch",
+        "replace my entire logging stack",
+        "restructure the whole on-call setup",
+    ],
+
+    ("expansive", "mutative", "analysis"): [
+        "overhaul all the metrics and reporting systems",
+        "rewrite the entire analytics pipeline",
+        "migrate all dashboards to the new platform",
+        "rebuild the entire data warehouse",
+        "replace every reporting tool with the new system",
+        "overhaul the complete observability stack",
+        "rebuild all the monitoring from scratch",
+        "migrate the entire data lake to the new format",
+        "replace all the analytics pipelines",
+        "restructure the whole reporting infrastructure",
+        "overhaul every dashboard and alert",
+        "rebuild the entire metrics collection system",
+        "migrate all telemetry to the new backend",
+        "replace all the data visualization tools",
+        "overhaul the complete BI stack",
+    ],
+
+    ("expansive", "mutative", "general"): [
+        "overhaul the entire documentation",
+        "rewrite everything from scratch",
+        "revamp all the content across the site",
+        "restructure the entire knowledge base",
+        "redo all the onboarding materials",
+        "rewrite the complete company wiki",
+        "overhaul all the training content",
+        "revamp every policy document",
+        "rewrite the entire developer handbook",
+        "restructure all the process documentation",
+        "redo the complete content strategy",
+        "overhaul every template in the organization",
+        "rewrite all the standard operating procedures",
+        "revamp the entire documentation site",
+        "restructure the whole communication playbook",
+    ],
+
+    # ── EXPANSIVE + GENERATIVE ──────────────────────────────────────────────────
+
+    ("expansive", "generative", "coding"): [
+        "implement a complete CI/CD pipeline from scratch",
+        "build a full authentication and authorization system",
+        "create a comprehensive test suite covering everything",
+        "generate a complete SDK for the entire API",
+        "implement the entire payment processing flow",
+        "build a full plugin architecture",
+        "create a complete observability stack",
+        "implement the whole event-driven system",
+        "build an entire microservices platform",
+        "create a full-stack application from scratch",
+        "implement everything needed for production deployment",
+        "build the complete data processing pipeline",
+        "scaffold the entire project structure",
+        "generate all boilerplate for the new service",
+        "create a comprehensive developer toolkit",
+        "build a complete developer platform from the ground up",
+        "implement a full governance and audit system",
+        "create a complete data ingestion framework",
+        "build an entire distributed tracing system",
+        "implement the full feature flag platform",
+    ],
+
     ("expansive", "generative", "research"): [
         "write a complete research paper on {topic}",
         "create a comprehensive literature survey on {topic}",
-        "draft a full research report",
-        "produce a systematic review of {topic}",
+        "draft a full research report from scratch",
+        "produce a systematic review of all of {topic}",
+        "write an entire thesis on {topic}",
+        "create a complete research program on {topic}",
+        "draft a full grant application on {topic}",
+        "produce a book-length treatment of {topic}",
+        "write a comprehensive encyclopedia entry on {topic}",
+        "create a complete course on {topic}",
+        "draft a full curriculum on {topic}",
+        "produce a comprehensive handbook on {topic}",
+        "write the complete field guide to {topic}",
+        "create a full systematic meta-analysis of {topic}",
+        "draft an entire research agenda for {topic}",
     ],
 
-    # EXPANSIVE + READONLY + research
+    ("expansive", "generative", "support"): [
+        "create comprehensive documentation for the entire system",
+        "write the full onboarding guide for all users",
+        "build a complete troubleshooting guide for all scenarios",
+        "generate all the runbooks for every service",
+        "create a complete developer handbook",
+        "build a complete operations manual for the entire platform",
+        "create all documentation from scratch",
+        "write the full reference manual for every API",
+        "produce a complete knowledge base from nothing",
+        "build every runbook, playbook, and guide for the system",
+        "create complete end-to-end documentation for all services",
+        "write the full technical specification for every component",
+        "produce a comprehensive admin guide for the whole platform",
+        "build a complete training program for all users",
+        "create everything needed to onboard a new team",
+    ],
+
+    ("expansive", "generative", "analysis"): [
+        "create a complete observability suite from scratch",
+        "build a comprehensive analytics platform",
+        "generate all reports and dashboards for the entire system",
+        "implement a full monitoring and alerting system",
+        "create an end-to-end performance testing framework",
+        "build a complete data platform from the ground up",
+        "create all analytics infrastructure from scratch",
+        "implement a full self-serve reporting system",
+        "build the entire business intelligence platform",
+        "create a complete real-time analytics system",
+        "generate every dashboard and report from scratch",
+        "build a complete anomaly detection system",
+        "create a full observability platform from the ground up",
+        "implement a comprehensive data quality framework",
+        "build the entire metrics and alerting infrastructure",
+    ],
+
+    ("expansive", "generative", "general"): [
+        "create a complete guide on {topic}",
+        "write a book outline covering everything about {topic}",
+        "produce a full curriculum on {topic}",
+        "write comprehensive documentation on {topic} from scratch",
+        "create an exhaustive reference guide on {topic}",
+        "write a complete encyclopedia on {topic}",
+        "produce a full training program on {topic}",
+        "create everything needed to teach {topic} from scratch",
+        "write an entire course covering all aspects of {topic}",
+        "produce a comprehensive playbook on {topic}",
+        "build a complete knowledge base on {topic}",
+        "write the definitive guide to {topic}",
+        "create a full resource library on {topic}",
+        "produce a complete curriculum on {topic} from first principles",
+        "write an exhaustive handbook on {topic}",
+    ],
+
+    # ── EXPANSIVE + READONLY ────────────────────────────────────────────────────
+
+    ("expansive", "readonly", "coding"): [
+        "analyze the entire codebase architecture",
+        "give me a comprehensive review of the whole repo",
+        "audit all the security vulnerabilities across everything",
+        "map out all dependencies across the entire project",
+        "review the complete test suite",
+        "document all public APIs across the repo",
+        "trace all code paths from every entry point",
+        "find all the performance bottlenecks in the system",
+        "audit the entire codebase for code smells",
+        "review everything and give me a complete technical report",
+        "analyze all the data flows end to end",
+        "read every file and give me a full architecture summary",
+        "audit every service for security issues",
+        "review the entire system for design flaws",
+        "map the complete dependency graph of the codebase",
+        "evaluate every module and give me a full assessment",
+        "trace all the data flows across every service",
+        "review the entire system for performance issues",
+        "audit all code across the entire repo",
+        "read everything and give me a complete picture",
+    ],
+
     ("expansive", "readonly", "research"): [
         "give me a comprehensive review of all research on {topic}",
         "analyze the complete body of literature on {topic}",
         "survey everything published about {topic} in the last decade",
+        "review all studies ever done on {topic}",
+        "map the entire landscape of research on {topic}",
+        "review every major paper on {topic}",
+        "survey the complete field of {topic}",
+        "analyze all published work on {topic}",
+        "review the entire research history of {topic}",
+        "map all research streams in {topic}",
+        "evaluate every study methodology used in {topic}",
+        "analyze every dataset used in {topic} research",
+        "review all findings and contradictions in {topic}",
+        "survey all approaches ever proposed for {topic}",
+        "read everything and give me the state of {topic}",
     ],
 
-    # FOCUSED + MUTATIVE + support
-    ("focused", "mutative", "support"): [
-        "fix my configuration for {service}",
-        "update my settings so {service} works",
-        "correct the config file",
-    ],
-
-    # FOCUSED + GENERATIVE + support
-    ("focused", "generative", "support"): [
-        "show me how to configure {service}",
-        "give me an example of {action}",
-        "write a config snippet for {service}",
-    ],
-
-    # FOCUSED + READONLY + support
-    ("focused", "readonly", "support"): [
-        "help me understand why {error} occurs",
-        "explain what this error means: {error}",
-        "why is {service} returning {error}",
-        "what does {error} mean",
-        "how do I fix {error}",
-        "i'm getting {error} when I run {func}",
-        "why doesn't my code work",
-        "question about {func}",
-        "confused about how {func} works",
-        "guide me through setting up {service}",
-    ],
-
-    # MODERATE + MUTATIVE + support
-    ("moderate", "mutative", "support"): [
-        "update my project to fix all the dependency issues",
-        "resolve all the errors in my config",
-    ],
-
-    # MODERATE + GENERATIVE + support
-    ("moderate", "generative", "support"): [
-        "help me set up a complete {service} environment",
-        "walk me through the full setup process",
-        "write a setup guide for {service}",
-    ],
-
-    # MODERATE + READONLY + support
-    ("moderate", "readonly", "support"): [
-        "explain the entire authentication flow",
-        "walk me through how {service} works end to end",
-        "help me understand the whole system",
-    ],
-
-    # EXPANSIVE + READONLY + support
     ("expansive", "readonly", "support"): [
-        "explain everything about {service}",
-        "give me a complete overview of how the system works",
+        "explain everything about {service} end to end",
+        "give me a complete understanding of how the whole system works",
+        "walk me through every aspect of the architecture",
+        "explain the entire platform from top to bottom",
+        "give me a complete picture of the entire infrastructure",
+        "explain everything about how all services interact",
+        "describe the complete end-to-end system behavior",
+        "walk me through every component and how they connect",
+        "explain the entire security model across all services",
+        "describe how everything works together from the ground up",
+        "give me a full understanding of every system component",
+        "explain the whole platform architecture in detail",
+        "walk me through all the failure modes of every service",
+        "describe everything I need to know about the system",
+        "explain all the moving parts from end to end",
     ],
 
-    # EXPANSIVE + GENERATIVE + support
-    ("expansive", "generative", "support"): [
-        "create a comprehensive documentation site",
-        "write the full onboarding guide",
-    ],
-
-    # EXPANSIVE + MUTATIVE + support
-    ("expansive", "mutative", "support"): [
-        "overhaul my entire configuration setup",
-    ],
-
-    # FOCUSED + READONLY + analysis
-    ("focused", "readonly", "analysis"): [
-        "what is the p99 latency for {endpoint}",
-        "show me the error rate",
-        "check the performance of {func}",
-        "review the benchmark results",
-        "evaluate the metrics for {module}",
-        "assess the {metric} metric",
-    ],
-
-    # FOCUSED + GENERATIVE + analysis
-    ("focused", "generative", "analysis"): [
-        "create a chart for {metric}",
-        "generate a performance report for {module}",
-        "write a summary of the benchmark results",
-        "produce a table of {metric} values",
-    ],
-
-    # FOCUSED + MUTATIVE + analysis
-    ("focused", "mutative", "analysis"): [
-        "update the dashboard metric for {metric}",
-        "fix the incorrect statistic",
-        "correct the measurement formula",
-    ],
-
-    # MODERATE + READONLY + analysis
-    ("moderate", "readonly", "analysis"): [
-        "analyze the performance metrics for {module}",
-        "benchmark {module} against the baseline",
-        "profile the {func} function",
-        "measure the latency across all endpoints",
-        "compare {module} performance vs {module2}",
-        "audit the resource usage",
-        "evaluate the overall system performance",
-        "review the code quality metrics",
-    ],
-
-    # MODERATE + GENERATIVE + analysis
-    ("moderate", "generative", "analysis"): [
-        "generate a performance report for the past month",
-        "create visualizations for all the metrics",
-        "build a dashboard for {module} statistics",
-        "write an analysis of the failure patterns",
-    ],
-
-    # MODERATE + MUTATIVE + analysis
-    ("moderate", "mutative", "analysis"): [
-        "update the analysis with the new data",
-        "revise the performance baselines",
-        "update all the dashboards to use the new metrics",
-    ],
-
-    # EXPANSIVE + READONLY + analysis
     ("expansive", "readonly", "analysis"): [
         "analyze all performance data across the entire system",
-        "give me a comprehensive performance audit",
-        "benchmark everything and give me a full report",
-        "evaluate all metrics and patterns across the codebase",
+        "give me a comprehensive performance audit of everything",
+        "benchmark every component and produce a full report",
+        "evaluate all metrics and patterns across the whole codebase",
+        "review every dashboard and give me a complete picture",
+        "analyze everything and produce a full health report",
+        "evaluate all performance data across all services",
+        "review every metric and alert across the platform",
+        "analyze the complete performance history of the system",
+        "give me a full audit of all monitoring data",
+        "benchmark every service and produce a complete comparison",
+        "review all the data and give me an end-to-end analysis",
+        "evaluate everything and produce a comprehensive assessment",
+        "analyze all time series data across the entire system",
+        "review the complete state of performance across the platform",
     ],
 
-    # EXPANSIVE + GENERATIVE + analysis
-    ("expansive", "generative", "analysis"): [
-        "create a complete observability suite",
-        "build a comprehensive analytics platform",
-        "generate all reports and dashboards for the system",
-    ],
-
-    # EXPANSIVE + MUTATIVE + analysis
-    ("expansive", "mutative", "analysis"): [
-        "overhaul all the metrics and reporting systems",
-        "rewrite the entire analytics pipeline",
-    ],
-
-    # FOCUSED + READONLY + general
-    ("focused", "readonly", "general"): [
-        "what is {topic}",
-        "tell me about {topic}",
-        "what does {term} mean",
-        "how does {topic} work",
-    ],
-
-    # FOCUSED + GENERATIVE + general
-    ("focused", "generative", "general"): [
-        "write a short description of {topic}",
-        "draft a brief note about {topic}",
-        "create a one-sentence summary of {topic}",
-    ],
-
-    # FOCUSED + MUTATIVE + general
-    ("focused", "mutative", "general"): [
-        "update the description of {topic}",
-        "edit this text",
-        "fix the typo",
-    ],
-
-    # MODERATE + READONLY + general
-    ("moderate", "readonly", "general"): [
-        "explain {topic} in detail",
-        "give me an overview of {topic}",
-        "describe the landscape of {topic}",
-    ],
-
-    # MODERATE + GENERATIVE + general
-    ("moderate", "generative", "general"): [
-        "write an article about {topic}",
-        "create a presentation on {topic}",
-        "draft a proposal for {topic}",
-    ],
-
-    # MODERATE + MUTATIVE + general
-    ("moderate", "mutative", "general"): [
-        "rewrite this section about {topic}",
-        "update the document",
-        "revise the plan",
-    ],
-
-    # EXPANSIVE + READONLY + general
     ("expansive", "readonly", "general"): [
-        "give me a comprehensive understanding of {topic}",
-        "survey everything about {topic}",
-        "explain the entire landscape of {topic}",
-    ],
-
-    # EXPANSIVE + GENERATIVE + general
-    ("expansive", "generative", "general"): [
-        "create a complete guide on {topic}",
-        "write a book outline on {topic}",
-        "produce a full curriculum on {topic}",
-    ],
-
-    # EXPANSIVE + MUTATIVE + general
-    ("expansive", "mutative", "general"): [
-        "overhaul the entire documentation",
-        "rewrite everything",
-        "revamp all content",
+        "give me a comprehensive understanding of everything about {topic}",
+        "survey the complete landscape of {topic}",
+        "explain the entire field of {topic} from first principles",
+        "cover all aspects of {topic} in depth",
+        "review everything related to {topic}",
+        "give me a complete picture of {topic} from every angle",
+        "explain the whole world of {topic}",
+        "describe everything that matters about {topic}",
+        "survey all approaches and viewpoints on {topic}",
+        "give me the most comprehensive explanation of {topic} possible",
+        "cover {topic} exhaustively from end to end",
+        "explain everything anyone would ever need to know about {topic}",
+        "survey the complete state of {topic}",
+        "describe the entire landscape of {topic}",
+        "review all perspectives and opinions on {topic}",
     ],
 }
 
-# Substitution vocabulary
-_FILES = ["auth.py", "main.py", "utils.py", "models.py", "api.py", "db.py", "config.py"]
-_FUNCS = ["validate", "authenticate", "process", "handle", "compute", "parse", "fetch"]
-_FUNCS2 = ["check", "verify", "run", "execute", "dispatch"]
-_MODULES = ["auth", "payment", "user", "session", "api", "db", "cache"]
-_CLASSES = ["User", "Session", "Request", "Handler", "Processor"]
-_SERVICES = ["redis", "postgres", "nginx", "docker", "kubernetes"]
-_ACTIONS = ["converts data", "validates input", "formats output"]
-_ENDPOINTS = ["/api/v1/users", "/auth/login", "/health"]
-_FEATURES = ["oauth", "caching", "rate-limiting", "pagination"]
-_ERRORS = ["TypeError", "AttributeError", "KeyError", "ImportError", "ValueError"]
-_TOPICS = ["machine learning", "distributed systems", "security", "performance", "testing"]
-_PAPERS = ["Smith et al. 2020", "Jones 2021", "Brown et al. 2019"]
-_METRICS = ["latency", "throughput", "error rate", "p99"]
-_MODULES2 = ["service_a", "service_b", "legacy", "v2"]
-_TERMS = ["idempotency", "sharding", "consensus", "backpressure"]
 
+# ── Hard eval set — never used for training ────────────────────────────────────
+# Phrasing deliberately different from all templates above.
+# Accuracy on this set is the real quality signal.
 
-def _sub(template: str, rng: random.Random) -> str:
-    return (template
-            .replace("{file}", rng.choice(_FILES))
-            .replace("{func}", rng.choice(_FUNCS))
-            .replace("{func2}", rng.choice(_FUNCS2))
-            .replace("{module}", rng.choice(_MODULES))
-            .replace("{module2}", rng.choice(_MODULES2))
-            .replace("{class_name}", rng.choice(_CLASSES))
-            .replace("{service}", rng.choice(_SERVICES))
-            .replace("{action}", rng.choice(_ACTIONS))
-            .replace("{endpoint}", rng.choice(_ENDPOINTS))
-            .replace("{feature}", rng.choice(_FEATURES))
-            .replace("{error}", rng.choice(_ERRORS))
-            .replace("{topic}", rng.choice(_TOPICS))
-            .replace("{paper}", rng.choice(_PAPERS))
-            .replace("{metric}", rng.choice(_METRICS))
-            .replace("{term}", rng.choice(_TERMS)))
+_HARD_EVAL: list[tuple[str, str, str, str]] = [
+    # ── complexity boundary: focused vs moderate ────────────────────────────────
+    ("focused",   "mutative",   "coding",    "there's a bug in {func}, please fix it"),
+    ("focused",   "mutative",   "coding",    "the {func} function is broken"),
+    ("focused",   "mutative",   "coding",    "something's wrong in {file}"),
+    ("moderate",  "mutative",   "coding",    "go through {module} and clean it up"),
+    ("moderate",  "mutative",   "coding",    "the whole {module} needs to be updated"),
+    ("expansive", "mutative",   "coding",    "go through everything and clean it all up"),
+    ("expansive", "mutative",   "coding",    "the codebase needs a full overhaul"),
+    # ── complexity boundary: moderate vs expansive ──────────────────────────────
+    ("moderate",  "readonly",   "coding",    "scan all of {module} for issues"),
+    ("expansive", "readonly",   "coding",    "scan the entire repo for issues"),
+    ("moderate",  "generative", "coding",    "add tests for the whole {module}"),
+    ("expansive", "generative", "coding",    "add tests for the whole codebase"),
+    # ── nature boundary: readonly vs generative ─────────────────────────────────
+    ("focused",   "readonly",   "coding",    "walk me through what {func} does"),
+    ("focused",   "generative", "coding",    "put together a test for {func}"),
+    ("moderate",  "readonly",   "coding",    "go through {module} and find the issues"),
+    ("moderate",  "generative", "coding",    "put together a test suite for {module}"),
+    # ── nature boundary: mutative vs generative ─────────────────────────────────
+    ("focused",   "mutative",   "coding",    "take out the dead code in {func}"),
+    ("focused",   "generative", "coding",    "add some dead code removal to the linter"),
+    ("moderate",  "mutative",   "coding",    "strip all the legacy code from {module}"),
+    ("moderate",  "generative", "coding",    "add a legacy cleanup tool to {module}"),
+    # ── domain: coding vs analysis ──────────────────────────────────────────────
+    ("moderate",  "readonly",   "analysis",  "check how {module} is performing"),
+    ("focused",   "readonly",   "analysis",  "what's the {metric} looking like"),
+    ("moderate",  "generative", "analysis",  "put together a report on {module} performance"),
+    ("focused",   "readonly",   "analysis",  "is the error rate ok"),
+    ("moderate",  "readonly",   "analysis",  "what are the performance numbers for {module}"),
+    ("focused",   "mutative",   "analysis",  "fix the wrong number in the dashboard"),
+    ("moderate",  "generative", "analysis",  "build charts for all the key metrics"),
+    ("expansive", "readonly",   "analysis",  "give me a full picture of how the system is performing"),
+    # ── domain: coding vs support ───────────────────────────────────────────────
+    ("focused",   "readonly",   "support",   "what does this error mean"),
+    ("focused",   "readonly",   "support",   "my {service} won't start"),
+    ("focused",   "mutative",   "support",   "fix my broken {service} setup"),
+    ("moderate",  "readonly",   "support",   "walk me through the whole {service} setup"),
+    ("focused",   "readonly",   "support",   "I'm getting {error} what do I do"),
+    ("moderate",  "generative", "support",   "write a setup guide for getting {service} running"),
+    ("expansive", "generative", "support",   "write complete docs for the whole platform"),
+    # ── domain: research ────────────────────────────────────────────────────────
+    ("focused",   "readonly",   "research",  "what did {paper} find"),
+    ("moderate",  "generative", "research",  "write me a lit review on {topic}"),
+    ("expansive", "readonly",   "research",  "cover everything written on {topic}"),
+    ("focused",   "readonly",   "research",  "what's the conclusion of {paper}"),
+    ("moderate",  "readonly",   "research",  "compare what different papers say about {topic}"),
+    ("focused",   "generative", "research",  "draft an abstract for this study"),
+    ("moderate",  "mutative",   "research",  "revise the {report_section} based on new data"),
+    ("expansive", "generative", "research",  "write a complete paper on {topic}"),
+    # ── domain: general ─────────────────────────────────────────────────────────
+    ("focused",   "readonly",   "general",   "what is {term} exactly"),
+    ("focused",   "generative", "general",   "write a short blurb about {topic}"),
+    ("moderate",  "generative", "general",   "write a detailed article about {topic}"),
+    ("expansive", "generative", "general",   "write everything I need to know about {topic}"),
+    ("focused",   "mutative",   "general",   "fix the typo in this paragraph"),
+    ("moderate",  "mutative",   "general",   "rewrite this whole section"),
+    ("expansive", "mutative",   "general",   "redo all the docs from scratch"),
+    # ── informal / terse ────────────────────────────────────────────────────────
+    ("focused",   "mutative",   "coding",    "it's broken fix it"),
+    ("focused",   "mutative",   "coding",    "plz fix"),
+    ("focused",   "readonly",   "support",   "halp"),
+    ("focused",   "readonly",   "support",   "???"),
+    ("focused",   "readonly",   "support",   "not working"),
+    ("focused",   "readonly",   "support",   "help"),
+    ("focused",   "mutative",   "coding",    "just fix this"),
+    ("moderate",  "generative", "coding",    "tests pls"),
+    # ── ambiguous verb "make" ────────────────────────────────────────────────────
+    ("focused",   "mutative",   "coding",    "make {func} return a string instead"),
+    ("focused",   "generative", "coding",    "make a test for {func}"),
+    ("moderate",  "mutative",   "coding",    "make all the handlers return consistent errors"),
+    ("expansive", "generative", "coding",    "make a complete sdk for the api"),
+    # ── real-user fragments ──────────────────────────────────────────────────────
+    ("focused",   "readonly",   "coding",    "not sure what {func} does"),
+    ("focused",   "readonly",   "support",   "confused about the {error}"),
+    ("moderate",  "readonly",   "coding",    "can you go through {module} for me"),
+    ("focused",   "generative", "coding",    "need a test written for {func}"),
+    ("moderate",  "mutative",   "coding",    "need {module} cleaned up"),
+    ("expansive", "mutative",   "coding",    "need the whole thing redone"),
+    # ── mixed signals (labeled by dominant intent) ───────────────────────────────
+    ("moderate",  "mutative",   "coding",    "analyze {module} and fix the issues you find"),
+    ("moderate",  "readonly",   "coding",    "look at {module} and let me know what to fix"),
+    ("focused",   "generative", "coding",    "look at {func} and write a test for it"),
+    ("moderate",  "readonly",   "analysis",  "look at the {metric} and tell me if it's ok"),
+    ("focused",   "mutative",   "support",   "my config is wrong, fix it"),
+    # ── casing / punctuation variants ───────────────────────────────────────────
+    ("focused",   "mutative",   "coding",    "FIX THE BUG IN {file}"),
+    ("focused",   "readonly",   "coding",    "EXPLAIN {func}"),
+    ("moderate",  "generative", "coding",    "WRITE TESTS FOR {module}"),
+    ("expansive", "mutative",   "coding",    "REWRITE THE ENTIRE CODEBASE"),
+    ("focused",   "readonly",   "research",  "WHAT DID {paper} FIND"),
+    # ── questions ───────────────────────────────────────────────────────────────
+    ("focused",   "readonly",   "coding",    "how does {func} work exactly?"),
+    ("focused",   "readonly",   "coding",    "what's the point of {func}?"),
+    ("focused",   "readonly",   "support",   "why is {error} happening?"),
+    ("focused",   "readonly",   "general",   "what even is {term}?"),
+    ("moderate",  "readonly",   "research",  "what does the literature say about {topic}?"),
+    # ── negation ────────────────────────────────────────────────────────────────
+    ("focused",   "mutative",   "coding",    "{func} doesn't handle nulls, fix it"),
+    ("focused",   "readonly",   "coding",    "{func} doesn't make sense to me, explain it"),
+    ("moderate",  "mutative",   "coding",    "{module} doesn't work with the new API, update it"),
+    # ── scope adverbs that signal complexity ─────────────────────────────────────
+    ("focused",   "mutative",   "coding",    "just tweak {func} a bit"),
+    ("focused",   "readonly",   "coding",    "quick look at {func}"),
+    ("moderate",  "mutative",   "coding",    "go through {module} and tighten things up"),
+    ("expansive", "mutative",   "coding",    "go through everything and tighten it all up"),
+    ("expansive", "readonly",   "coding",    "give me the full picture of the whole system"),
+    ("moderate",  "generative", "support",   "put together a complete guide for {service}"),
+    ("expansive", "generative", "support",   "put together complete docs for the whole platform"),
 
+    # ── research-specific hard eval ───────────────────────────────────────────────
+    ("focused",   "readonly",   "research",  "what is the {stat_term} in {paper}"),
+    ("focused",   "readonly",   "research",  "did {paper} pass peer review at {journal}"),
+    ("focused",   "generative", "research",  "write the author response for {journal}"),
+    ("moderate",  "generative", "research",  "draft all sections of the {journal} rebuttal"),
+    ("moderate",  "readonly",   "research",  "compare the {stat_term} across all the {study_type} papers"),
+    ("expansive", "generative", "research",  "write the complete {study_type} protocol for our lab"),
+    ("focused",   "mutative",   "research",  "fix the {stat_term} calculation in the {report_section}"),
+    ("moderate",  "mutative",   "research",  "address all reviewer comments for the {journal} submission"),
 
-# Edge case templates (ambiguous / terse / noisy)
-_EDGE_CASES = [
-    ("focused", "mutative", "coding", "do it"),
-    ("focused", "readonly", "support", "?"),
-    ("moderate", "generative", "coding", "tests"),
-    ("focused", "mutative", "coding", "fixx the bug"),     # typo
-    ("focused", "readonly", "support", "halp"),             # informal
-    ("focused", "readonly", "general", "what"),
-    ("moderate", "readonly", "research", "研究してください"),  # non-English
-    ("focused", "generative", "coding", "write"),
-    ("expansive", "mutative", "coding", "change everything"),
-    ("focused", "mutative", "coding", "fix"),
-    ("moderate", "generative", "analysis", "dashboard"),
-    ("focused", "readonly", "support", "it's broken"),
-    ("moderate", "mutative", "coding", "update"),
-    ("focused", "readonly", "coding", "???"),
-    ("expansive", "readonly", "research", "tell me about all the papers on AI safety ever published"),
-    # mixed signals
-    ("focused", "mutative", "coding", "analyze and fix the bug in auth.py"),
-    ("moderate", "readonly", "coding", "review the code and add some tests"),
+    # ── support-specific hard eval (infra/k8s vocabulary) ─────────────────────────
+    ("focused",   "readonly",   "support",   "why is the {k8s} in CrashLoopBackOff"),
+    ("focused",   "readonly",   "support",   "what do the {log} say about {incident}"),
+    ("focused",   "mutative",   "support",   "fix the resource limits on the {k8s}"),
+    ("moderate",  "mutative",   "support",   "update all {k8s} resource limits across {env}"),
+    ("moderate",  "readonly",   "support",   "trace the root cause of {incident} through the {log}"),
+    ("expansive", "generative", "support",   "write all {infra} runbooks for handling {incident}"),
+    ("focused",   "generative", "support",   "give me the {infra} command to restart the {k8s}"),
+    ("moderate",  "generative", "support",   "write an on-call guide for {incident} scenarios"),
+
+    # ── analysis-specific hard eval (BI/SQL vocabulary) ───────────────────────────
+    ("focused",   "readonly",   "analysis",  "what is today's {data_metric} in {bi_tool}"),
+    ("focused",   "generative", "analysis",  "write a {sql} to pull {data_metric} by cohort"),
+    ("focused",   "mutative",   "analysis",  "fix the {sql} that calculates {data_metric}"),
+    ("moderate",  "generative", "analysis",  "build all {chart} visualizations for {data_metric} in {bi_tool}"),
+    ("moderate",  "readonly",   "analysis",  "review all the {sql} queries for {data_metric} correctness"),
+    ("expansive", "generative", "analysis",  "build a complete {bi_tool} analytics layer from scratch"),
+    ("moderate",  "mutative",   "analysis",  "fix all the {data_metric} definitions across {bi_tool}"),
+    ("expansive", "readonly",   "analysis",  "audit every {bi_tool} dashboard and {sql} for correctness"),
+
+    # ── general-specific hard eval (doc_type/work_product vocabulary) ──────────────
+    ("focused",   "generative", "general",   "draft a quick {doc_type} for this decision"),
+    ("focused",   "readonly",   "general",   "what goes into a {doc_type}"),
+    ("moderate",  "generative", "general",   "write a complete {work_product} for {audience}"),
+    ("moderate",  "readonly",   "general",   "walk me through all the sections of this {doc_type}"),
+    ("expansive", "generative", "general",   "create every {doc_type} and {work_product} we need for the launch"),
+    ("focused",   "mutative",   "general",   "update the OKR to reflect the new deadline"),
+    ("moderate",  "mutative",   "general",   "revise the entire {work_product} based on stakeholder feedback"),
+    ("expansive", "readonly",   "general",   "review every {doc_type} and {work_product} across the organization"),
+
+    # ── cross-domain confusion hard cases ─────────────────────────────────────────
+    ("focused",   "readonly",   "analysis",  "what is the {data_metric} trend"),          # not coding
+    ("focused",   "readonly",   "research",  "what is the {stat_term} for this experiment"),  # not analysis
+    ("moderate",  "generative", "support",   "write the postmortem for {incident}"),       # not general
+    ("focused",   "generative", "general",   "write a retrospective summary for the team"), # not support
+    ("moderate",  "readonly",   "general",   "review all the OKRs for this quarter"),      # not analysis
 ]
 
 
-def generate(seed: int = 42, target_per_combo: int = 250) -> list[tuple[str, str, str, str]]:
-    """
-    Returns list of (text, complexity, nature, domain) tuples.
+# ── Public API ─────────────────────────────────────────────────────────────────
 
-    target_per_combo: number of examples to generate per label combination.
-    ~45 combos × 250 = ~11,250 + 300 edge cases.
+def generate(seed: int = 42, target_per_combo: int = 500) -> list[tuple[str, str, str, str]]:
+    """
+    Training corpus. Returns (text, complexity, nature, domain) tuples.
+    target_per_combo examples generated per label combination.
+    ~45 combos × 500 = ~22,500 base + augmentation.
     """
     rng = random.Random(seed)
     out: list[tuple[str, str, str, str]] = []
@@ -482,21 +1672,22 @@ def generate(seed: int = 42, target_per_combo: int = 250) -> list[tuple[str, str
         while count < target_per_combo:
             tpl = rng.choice(templates)
             text = _sub(tpl, rng)
-            # light augmentation: random casing, filler prefix
-            if rng.random() < 0.1:
-                text = text.upper()
-            elif rng.random() < 0.1:
-                text = text.capitalize()
-            if rng.random() < 0.1:
-                prefix = rng.choice(["please ", "can you ", "i need you to ", ""])
-                text = prefix + text
+            text = _augment(text, rng)
             out.append((text, complexity, nature, domain))
             count += 1
 
-    # Edge cases
-    for complexity, nature, domain, text in _EDGE_CASES:
-        for _ in range(15):  # ~15 variants each ≈ 255 edge cases
-            out.append((text, complexity, nature, domain))
-
     rng.shuffle(out)
+    return out
+
+
+def generate_hard(seed: int = 42) -> list[tuple[str, str, str, str]]:
+    """
+    Hard eval set. Phrases not derived from any training template.
+    Use ONLY for evaluation — never include in training data.
+    """
+    rng = random.Random(seed)
+    out: list[tuple[str, str, str, str]] = []
+    for complexity, nature, domain, template in _HARD_EVAL:
+        text = _sub(template, rng)
+        out.append((text, complexity, nature, domain))
     return out
