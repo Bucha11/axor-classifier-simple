@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axor-classifier-simple"
-version = "0.2.0"
+version = "0.2.1"
 description = "ML classifiers for axor-core: TaskSignalClassifier + MLAnomalyDetector"
 readme = "README.md"
 license = { text = "MIT" }
