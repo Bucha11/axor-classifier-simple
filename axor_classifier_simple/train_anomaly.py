@@ -45,7 +45,12 @@ def train(
         ) from e
 
     from axor_core.contracts.anomaly import NormalizedIntent
-    from axor_classifier_simple.data.anomaly_data import generate, generate_hard
+    from axor_classifier_simple.data.anomaly_data import LINEAGE_KEYS, generate, generate_hard
+
+    def _to_intent(d: dict) -> NormalizedIntent:
+        # Corpus dicts carry per-value lineage annotations (e.g. carries_secret)
+        # that are not NormalizedIntent fields — strip them before reconstructing.
+        return NormalizedIntent(**{k: v for k, v in d.items() if k not in LINEAGE_KEYS})
     from axor_classifier_simple.anomaly_detector import window_to_feature_vector
 
     out_path = Path(model_path) if model_path else _default_path()
@@ -58,7 +63,7 @@ def train(
     X = []
     y = []
     for window_dicts, label in data:
-        window = [NormalizedIntent(**d) for d in window_dicts]
+        window = [_to_intent(d) for d in window_dicts]
         X.append(window_to_feature_vector(window))
         y.append(label)
 
@@ -67,7 +72,7 @@ def train(
     X_hard = []
     y_hard = []
     for window_dicts, label in hard_data:
-        window = [NormalizedIntent(**d) for d in window_dicts]
+        window = [_to_intent(d) for d in window_dicts]
         X_hard.append(window_to_feature_vector(window))
         y_hard.append(label)
     print(f"  {len(X_hard)} hard eval examples (boundary cases, not used for training)")
