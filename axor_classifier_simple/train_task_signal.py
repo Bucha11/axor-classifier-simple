@@ -31,10 +31,12 @@ def train(
     min_hard_accuracy: float = 0.75,
 ) -> dict[str, dict[str, float]]:
     """
-    Generate training data, train all three heads, evaluate, and save.
+    Generate training data (English + Russian), train all three heads,
+    evaluate, and save.
 
-    Returns a dict of {head: {synthetic_acc, hard_acc}}.
-    Raises RuntimeError if either accuracy gate is not met.
+    Returns a dict of {head: {synthetic_acc, hard_acc, hard_ece}}.
+    Raises RuntimeError if either accuracy gate is not met. Calibration
+    (hard_ece) is reported but not gated.
     """
     try:
         import joblib
@@ -51,6 +53,25 @@ def train(
         ) from e
 
     from axor_classifier_simple.data.task_signal_data import generate, generate_hard
+
+    def _ece(y_true: list[str], proba, classes, n_bins: int = 10) -> float:
+        """Expected Calibration Error on the hard set. TaskAnalyzer compares
+        this model's confidence against the heuristic's to decide which
+        classification wins, so miscalibration translates directly into wrong
+        policy presets — report it next to accuracy."""
+        confidences = proba.max(axis=1)
+        predictions = classes[proba.argmax(axis=1)]
+        correct = (predictions == np.asarray(y_true)).astype(float)
+        ece = 0.0
+        n = len(y_true)
+        for i in range(n_bins):
+            lo, hi = i / n_bins, (i + 1) / n_bins
+            mask = (confidences > lo) & (confidences <= hi) if i else (
+                (confidences >= lo) & (confidences <= hi)
+            )
+            if mask.any():
+                ece += (mask.sum() / n) * abs(correct[mask].mean() - confidences[mask].mean())
+        return float(ece)
 
     out_path = Path(model_path) if model_path else _default_path()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,9 +142,13 @@ def train(
 
         syn_acc  = accuracy_score(y_val,      pipeline.predict(X_val))
         hard_acc = accuracy_score(hard_labels, pipeline.predict(hard_texts))
+        hard_ece = _ece(
+            hard_labels, pipeline.predict_proba(hard_texts), pipeline.classes_
+        )
 
         print(f"  synthetic val : {syn_acc:.3f}")
         print(f"  hard eval     : {hard_acc:.3f}  ← real quality signal")
+        print(f"  hard ECE      : {hard_ece:.3f}  ← calibration (lower is better)")
 
         if syn_acc < min_synthetic_accuracy:
             raise RuntimeError(
@@ -139,6 +164,7 @@ def train(
         results[head_name] = {
             "synthetic_acc": syn_acc,
             "hard_acc":      hard_acc,
+            "hard_ece":      hard_ece,
             "pipeline":      pipeline,
         }
 
@@ -146,8 +172,14 @@ def train(
     joblib.dump(bundle, out_path)
     print(f"\nModel saved to {out_path}")
 
-    return {k: {"synthetic_acc": v["synthetic_acc"], "hard_acc": v["hard_acc"]}
-            for k, v in results.items()}
+    return {
+        k: {
+            "synthetic_acc": v["synthetic_acc"],
+            "hard_acc":      v["hard_acc"],
+            "hard_ece":      v["hard_ece"],
+        }
+        for k, v in results.items()
+    }
 
 
 def _default_path() -> Path:
