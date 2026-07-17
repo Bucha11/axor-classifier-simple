@@ -35,9 +35,11 @@ Without `[ml]`, the package installs with no dependencies but raises `ImportErro
 
 ML replacement for the built-in `HeuristicClassifier`. Implements the `SignalClassifier` ABC from `axor_core.contracts.policy`.
 
+Trained on English **and Russian** task corpora — the built-in heuristic is English-only, so on non-English input this classifier is the only meaningful signal in the escalation cascade.
+
 ### Architecture
 
-Three independent TF-IDF (char n-grams 1–3, `char_wb` analyzer) + LogisticRegression heads:
+Three independent TF-IDF (`FeatureUnion` of char n-grams 1–4, `char_wb` analyzer, and word n-grams 1–2) + LogisticRegression heads:
 
 | Head | Labels |
 |------|--------|
@@ -56,11 +58,12 @@ python -m axor_classifier_simple.train_task_signal
 # custom output path
 python -m axor_classifier_simple.train_task_signal --out /path/to/model.joblib
 
-# fail if validation accuracy < threshold (default 0.85)
-python -m axor_classifier_simple.train_task_signal --min-accuracy 0.90
+# accuracy gates (defaults: synthetic 0.90, hard eval 0.75)
+python -m axor_classifier_simple.train_task_signal \
+    --min-synthetic-accuracy 0.95 --min-hard-accuracy 0.80
 ```
 
-Training generates synthetic data, trains three pipelines, validates each head, and saves a joblib bundle. Raises `RuntimeError` if any head falls below `min_accuracy`.
+Training generates synthetic data (English + Russian), trains three pipelines, validates each head on a held-out synthetic slice **and** on a hand-written hard eval set never derived from the training templates, and saves a joblib bundle. Raises `RuntimeError` if any head falls below its accuracy gate. Expected Calibration Error (ECE) on the hard set is reported per head — the axor-core `TaskAnalyzer` compares this model's confidence against the heuristic's, so calibration matters as much as accuracy.
 
 ### Use with axor-core
 

@@ -1,26 +1,17 @@
 """
 Tests for TaskSignalClassifier.
 
-Trains a model in a temp directory, then verifies label prediction
-and confidence for known-good inputs.
+Uses the session-scoped trained_model fixture (tests/conftest.py), then
+verifies label prediction and confidence for known-good inputs.
 """
 from __future__ import annotations
 
 import time
 import os
 import pytest
-from pathlib import Path
 
 from axor_classifier_simple.task_signal import TaskSignalClassifier, ModelNotTrainedError
 from axor_classifier_simple._model_security import UntrustedModelError
-from axor_classifier_simple.train_task_signal import train
-
-
-@pytest.fixture(scope="module")
-def trained_model(tmp_path_factory) -> Path:
-    path = tmp_path_factory.mktemp("models") / "task_signal.joblib"
-    train(model_path=path, seed=42)
-    return path
 
 
 def test_model_not_trained_raises():
