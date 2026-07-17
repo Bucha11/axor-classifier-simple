@@ -27,11 +27,14 @@ except ImportError:
     _SKLEARN_AVAILABLE = False
 
 try:
+    # NOTE: the AnomalyDetector / LLMVerifier Protocols were removed from
+    # axor-core (dead-surface prune); MLAnomalyDetector implements their
+    # shape structurally, so nothing here needs the nominal types. Importing
+    # them made this whole module degrade to an ImportError stub against
+    # current core — import only what still exists.
     from axor_core.contracts.anomaly import (
         AnomalyClass,
-        AnomalyDetector,
         AnomalyResult,
-        LLMVerifier,
         NormalizedIntent,
     )
     from axor_core.node.canonicalizer import IntentCanonicalizer
