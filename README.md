@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/axor-classifier-simple)](https://pypi.org/project/axor-classifier-simple/)
 [![Python](https://img.shields.io/pypi/pyversions/axor-classifier-simple)](https://pypi.org/project/axor-classifier-simple/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **ML classifiers for axor-core: task signal classification and behavioral anomaly detection.**
 
@@ -218,4 +218,4 @@ pytest tests/
 
 ## License
 
-MIT
+Apache-2.0 — see [LICENSE](LICENSE).
